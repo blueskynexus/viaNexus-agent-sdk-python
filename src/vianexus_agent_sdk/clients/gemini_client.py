@@ -26,6 +26,44 @@ class GeminiClient(EnhancedMCPClient):
         self.max_tokens = config.get("max_tokens", 1000)
         self.messages = []
         self.max_history_length = config.get("max_history_length", 50)
+    
+    async def get_tools(self):
+        """
+        TODO: fix me
+        """
+        formatted_tools = []
+        tools = await self.session.list_tools()
+        for tool in tools.tools:
+            if tool.name == "search":
+                t = {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "default": ""
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+                formatted_tools.append(t)
+            elif tool.name == "current_date":
+                formatted_tools.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema
+                })
+            else:
+                formatted_tools.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema
+                })
+        gemini_tools = genai.types.Tool(function_declarations=formatted_tools)
+        return gemini_tools
 
     async def process_query(self, query: str) -> str:
         """
@@ -35,43 +73,7 @@ class GeminiClient(EnhancedMCPClient):
         if not self.session:
             return "Error: MCP session not initialized."
 
-
-        try:
-            formatted_tools = []
-            tools = await self.session.list_tools()
-            for tool in tools.tools:
-                if tool.name == "search":
-                    t = {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "default": ""
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    }
-                    formatted_tools.append(t)
-                elif tool.name == "current_date":
-                    formatted_tools.append({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.inputSchema
-                    })
-                else:
-                    formatted_tools.append({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.inputSchema
-                    })
-            gemini_tools = genai.types.Tool(function_declarations=formatted_tools)
-        except Exception as e:
-            logging.error("Error listing tools: %s", e)
-            tools = []
+        gemini_tools = await self.get_tools()
 
         self.messages.append({"role": "user", "parts": [{"text": query}]})
         # --- Stateful Tool-Calling Loop ---
