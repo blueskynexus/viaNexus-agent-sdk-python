@@ -1,7 +1,19 @@
-import google.generativeai as genai
 import logging
-import json
+import base64
+from google import genai
 from vianexus_agent_sdk.mcp_client.enhanced_mcp_client import EnhancedMCPClient
+
+'''
+The text property is not a top-level property of the response object itself;
+it's a shortcut property provided for convenience.
+
+The long way: response.candidates[0].content.parts[0].text
+
+By default, the candidate_count is set to 1, so the candidates list will 
+usually contain a single item. However, you can configure the API to generate
+multiple candidates for a single prompt, which can be useful for comparing 
+different potential responses.
+'''
 
 class GeminiClient(EnhancedMCPClient):
     """
@@ -10,8 +22,7 @@ class GeminiClient(EnhancedMCPClient):
     """
     def __init__(self, config):
         super().__init__(config)
-        genai.configure(api_key=config.get("llm_api_key"))
-        self.model = genai.GenerativeModel(config.get("llm_model", "gemini-2.0-flash"))
+        self.model = genai.Client()
         self.max_tokens = config.get("max_tokens", 1000)
         self.messages = []
         self.max_history_length = config.get("max_history_length", 50)
@@ -24,72 +35,103 @@ class GeminiClient(EnhancedMCPClient):
         if not self.session:
             return "Error: MCP session not initialized."
 
-        # Append the new user query to the conversation history in the correct format
-        self.messages.append({"role": "user", "parts": [{"text": query}]})
 
         try:
-            tools = [{
-                "function_declarations": [
-                    {
-                        "name": "search",
-                        "description": (
-                            "Search for datasets from viaNexus financial data API."
-                        ),
+            formatted_tools = []
+            tools = await self.session.list_tools()
+            for tool in tools.tools:
+                if tool.name == "search":
+                    t = {
+                        "name": tool.name,
+                        "description": tool.description,
                         "parameters": {
-                            "type": "OBJECT",
+                            "type": "object",
                             "properties": {
                                 "query": {
-                                    "type": "STRING",
-                                    "description": "Dataset name. Empty for all."
+                                    "type": "string",
+                                    "default": ""
                                 }
-                            }
-                        }
-                    },
-                    {
-                        "name": "fetch",
-                        "description": (
-                            "Retrieve a dataset by endpoint, product, dataset name, and symbol."
-                        ),
-                        "parameters": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "endpoint": {"type": "STRING"},
-                                "product": {"type": "STRING"},
-                                "dataset_name": {"type": "STRING"},
-                                "symbols": {"type": "STRING"},
-                                "subkey": {"type": "STRING"},
-                                "last": {"type": "NUMBER"},
-                                "region": {"type": "STRING"},
-                                "on_date": {"type": "STRING"},
-                                "from_date": {"type": "STRING"},
-                                "to_date": {"type": "STRING"},
-                                "filter": {"type": "STRING"}
                             },
-                            "required": ["endpoint", "product", "dataset_name"]
+                            "required": ["query"]
                         }
-                    },
-                    {
-                        "name": "current_date",
-                        "description": "Provides the current date.",
-                        "parameters": { "type": "OBJECT" }
                     }
-                ]
-            }]
+                    formatted_tools.append(t)
+                elif tool.name == "current_date":
+                    formatted_tools.append({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.inputSchema
+                    })
+                else:
+                    formatted_tools.append({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.inputSchema
+                    })
+            gemini_tools = genai.types.Tool(function_declarations=formatted_tools)
         except Exception as e:
             logging.error("Error listing tools: %s", e)
             tools = []
 
+        self.messages.append({"role": "user", "parts": [{"text": query}]})
         # --- Stateful Tool-Calling Loop ---
+        # Append the new user query to the conversation history
         # The loop continues until the model returns a text response instead of a tool call.
+        loop_count = 1
         while True:
-            try:
-                pass
-            except Exception as e:
-                print(e)
-                logging.error(f"Error generating response from Gemini: {e}")
-                error_msg = f"An error occurred while processing your request: {e}"
-                self.messages.append({"role": "model", "parts": [{"text": error_msg}]})
-                return error_msg
+            print(f"\n loop {loop_count}")
+            response = await self.model.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=self.messages,
+                config=genai.types.GenerateContentConfig(
+                    temperature=0,
+                    tools=[gemini_tools]
+                )
+            )
+
+            # Check for a text response first
+            if response.text:
+                print("text response detected")
+                print(response.text)
+                self.messages.append(genai.types.Content(role="model", parts=[{"text": response.text}]))
+                break
+    
+            # Check if the response contains content, to prevent NoneType error
+            if response.candidates and response.candidates[0].content:
+                # Check if the model is calling a tool
+                tool_calls = [p.function_call for p in response.candidates[0].content.parts if p.function_call]
+        
+                if tool_calls:
+                    # Add the model's tool-call response to the history
+                    self.messages.append(response.candidates[0].content)
+
+                    tool_results = []
+                    for tool_call in tool_calls:
+                        print("function call detected")
+                        print(f"name: {tool_call.name} \n args: {tool_call.args}")
+
+                        result = await self.session.call_tool(tool_call.name, tool_call.args)
+                        if result.isError:
+                            logging.error(f"Tool {tool_call.name} failed")
+                            raise Exception(f"Tool {tool_call.name} failed")
+                
+                        tool_response_part = genai.types.Part.from_function_response(
+                            name=tool_call.name,
+                            response={"result": result.content[0].text}
+                        )
+                        tool_results.append(tool_response_part)
+
+                    self.messages.append(genai.types.Content(role="user", parts=tool_results))
+                    loop_count += 1
+                else:
+                    # Handle cases where there is content, but it's not a text or tool call (unlikely but good practice)
+                    print("Warning: Unexpected content format.")
+                    break
+            else:
+                # This is the key change: Handle the 'None' content case
+                print(f"Warning: Model response has no content. Finish reason: {response.candidates[0].finish_reason}")
+                print("Breaking loop.")
+                break
 
     def _convert_schema_for_gemini(self, schema: dict) -> dict:
         """
