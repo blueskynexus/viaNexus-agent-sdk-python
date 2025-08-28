@@ -4,6 +4,10 @@ import json
 from vianexus_agent_sdk.mcp_client.enhanced_mcp_client import EnhancedMCPClient
 
 class GeminiClient(EnhancedMCPClient):
+    """
+    A refactored client for interacting with the Gemini API, featuring robust
+    handling of tool calls and conversation history.
+    """
     def __init__(self, config):
         super().__init__(config)
         genai.configure(api_key=config.get("llm_api_key"))
@@ -13,132 +17,94 @@ class GeminiClient(EnhancedMCPClient):
         self.max_history_length = config.get("max_history_length", 50)
 
     async def process_query(self, query: str) -> str:
+        """
+        Processes a user query, interacts with the Gemini model, and handles
+        any necessary tool calls in a stateful loop.
+        """
         if not self.session:
             return "Error: MCP session not initialized."
 
+        # Append the new user query to the conversation history in the correct format
+        self.messages.append({"role": "user", "parts": [{"text": query}]})
+
         try:
-            tool_list = await self.session.list_tools()
-            tools = []
-            for t in (tool_list.tools or []):
-                # Convert MCP schema to Gemini-compatible schema
-                input_schema = getattr(t, "inputSchema", {}) or {}
-                gemini_schema = self._convert_schema_for_gemini(input_schema)
-                
-                tools.append({
-                    "name": t.name,
-                    "description": t.description or "",
-                    "parameters": gemini_schema,
-                })
+            tools = [{
+                "function_declarations": [
+                    {
+                        "name": "search",
+                        "description": (
+                            "Search for datasets from viaNexus financial data API."
+                        ),
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "query": {
+                                    "type": "STRING",
+                                    "description": "Dataset name. Empty for all."
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "name": "fetch",
+                        "description": (
+                            "Retrieve a dataset by endpoint, product, dataset name, and symbol."
+                        ),
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "endpoint": {"type": "STRING"},
+                                "product": {"type": "STRING"},
+                                "dataset_name": {"type": "STRING"},
+                                "symbols": {"type": "STRING"},
+                                "subkey": {"type": "STRING"},
+                                "last": {"type": "NUMBER"},
+                                "region": {"type": "STRING"},
+                                "on_date": {"type": "STRING"},
+                                "from_date": {"type": "STRING"},
+                                "to_date": {"type": "STRING"},
+                                "filter": {"type": "STRING"}
+                            },
+                            "required": ["endpoint", "product", "dataset_name"]
+                        }
+                    },
+                    {
+                        "name": "current_date",
+                        "description": "Provides the current date.",
+                        "parameters": { "type": "OBJECT" }
+                    }
+                ]
+            }]
         except Exception as e:
             logging.error("Error listing tools: %s", e)
             tools = []
 
-        self.messages.append({"role": "user", "content": query})
+        # --- Stateful Tool-Calling Loop ---
+        # The loop continues until the model returns a text response instead of a tool call.
+        while True:
+            try:
+                pass
+            except Exception as e:
+                print(e)
+                logging.error(f"Error generating response from Gemini: {e}")
+                error_msg = f"An error occurred while processing your request: {e}"
+                self.messages.append({"role": "model", "parts": [{"text": error_msg}]})
+                return error_msg
 
-        try:
-            # Convert messages to Gemini format
-            gemini_messages = self._convert_to_gemini_format(self.messages)
-            
-            # Generate response from Gemini
-            response = await self.model.generate_content_async(
-                gemini_messages,
-                generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=self.max_tokens,
-                ),
-                tools=tools if tools else None
-            )
-
-            # Handle tool calls if present
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'content') and candidate.content:
-                    content = candidate.content
-                    
-                    # Check for tool calls
-                    tool_calls = []
-                    for part in content.parts:
-                        if hasattr(part, 'function_call'):
-                            tool_calls.append(part.function_call)
-                    
-                    if tool_calls:
-                        result_blocks = []
-                        for tool_call in tool_calls:
-                            name = tool_call.name
-                            args = tool_call.args if hasattr(tool_call, 'args') else {}
-                            try:
-                                result = await self.session.call_tool(name, args)
-                                payload = result.content
-                                if isinstance(payload, (dict, list)):
-                                    text_payload = payload[0].text
-                                else:
-                                    text_payload = str(payload)
-                                result_blocks.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_call.name,  # Gemini doesn't have tool_use_id like Anthropic
-                                    "content": [{"type": "text", "text": text_payload}],
-                                })
-                            except Exception as e:
-                                logging.error("Tool '%s' failed: %s", name, e)
-                                result_blocks.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_call.name,
-                                    "content": [{"type": "text", "text": f"Error: {e}"}],
-                                })
-                        
-                        # Add tool results to conversation
-                        self.messages.append({"role": "assistant", "content": response.text})
-                        self.messages.append({"role": "user", "content": result_blocks})
-                        
-                        # Continue conversation with tool results
-                        return await self.process_query("Please continue with the tool results.")
-                    else:
-                        # No tool calls, just add response to conversation
-                        self.messages.append({"role": "assistant", "content": response.text})
-                        print(response.text)
-                        self._trim_history()
-                        return ""
-                else:
-                    # Handle case where response doesn't have expected structure
-                    response_text = str(response)
-                    self.messages.append({"role": "assistant", "content": response_text})
-                    print(response_text)
-                    self._trim_history()
-                    return ""
-            else:
-                # Handle case where response doesn't have candidates
-                response_text = str(response)
-                self.messages.append({"role": "assistant", "content": response_text})
-                print(response_text)
-                self._trim_history()
-                return ""
-
-        except Exception as e:
-            logging.error("Error generating response from Gemini: %s", e)
-            error_msg = f"Error: {e}"
-            self.messages.append({"role": "assistant", "content": error_msg})
-            return error_msg
-
-    def _convert_to_gemini_format(self, messages):
-        """Convert conversation messages to Gemini format"""
-        gemini_messages = []
-        for msg in messages:
-            if msg["role"] == "user":
-                gemini_messages.append({"role": "user", "parts": [{"text": msg["content"]}]})
-            elif msg["role"] == "assistant":
-                gemini_messages.append({"role": "model", "parts": [{"text": msg["content"]}]})
-        return gemini_messages
-
-    def _convert_schema_for_gemini(self, schema):
-        """Convert MCP schema to Gemini-compatible schema by removing unsupported fields"""
+    def _convert_schema_for_gemini(self, schema: dict) -> dict:
+        """
+        Recursively sanitizes an MCP tool schema to be compatible with Gemini's API
+        by keeping only the supported fields.
+        """
         if not isinstance(schema, dict):
             return {}
         
-        # Create a copy to avoid modifying the original
+        # Supported fields in Gemini's function declaration schema
+        supported_keys = {'type', 'description', 'required', 'properties', 'items'}
         gemini_schema = {}
         
-        # Copy supported fields
         for key, value in schema.items():
-            if key in ['type', 'description', 'required', 'properties', 'items']:
+            if key in supported_keys:
                 if key == 'properties' and isinstance(value, dict):
                     # Recursively convert nested properties
                     gemini_schema[key] = {
@@ -154,6 +120,7 @@ class GeminiClient(EnhancedMCPClient):
         return gemini_schema
 
     def _trim_history(self):
-        """Keep conversation history within reasonable bounds"""
+        """Keeps the conversation history from exceeding the maximum length."""
         if len(self.messages) > self.max_history_length:
+            # Keep the last `max_history_length` messages
             self.messages = self.messages[-self.max_history_length:]
