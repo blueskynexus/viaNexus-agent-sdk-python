@@ -37,7 +37,6 @@ class OpenAiClient(EnhancedMCPClient):
 
     async def _stream_assistant(self, messages, tools, timeout=60):
         text_out = []
-        # index -> {"id": str|None, "name": str|None, "arguments": str}
         pending = {}
 
         stream = await self.openai.chat.completions.create(
@@ -112,6 +111,7 @@ class OpenAiClient(EnhancedMCPClient):
             args = {"_raw": arg_str}
 
         try:
+            logging.info(f"Calling tool {name} with args {args}")
             result = await self.session.call_tool(name, args)
             payload = getattr(result, "content", result)
             if not isinstance(payload, str):
