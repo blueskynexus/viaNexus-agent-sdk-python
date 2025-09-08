@@ -8,7 +8,7 @@ This SDK allows you to build a powerful financial Agent or digital employee/assi
 To install the SDK, you can use uv:
 
 ```bash
-    uv add git+https://github.com/blueskynexus/viaNexus-agent-sdk-python --tag v0.1.17-pre
+    uv add git+https://github.com/blueskynexus/viaNexus-agent-sdk-python --tag v0.1.19-pre
 ```
 ### Dependencies
 - None required
@@ -26,9 +26,10 @@ Currently, the viaNexus AI Agent SDK for Python supports Google's Gemini and Ant
 ### Create a configuration file `config.yaml`
 ```yaml
 development:
-  LLM_API_KEY: "<LLM API Key>" # Currently only supports GEMINI
-  LLM_MODEL: "<GEMINI Model Name>" # gemini-2.5-flash
+  LLM_API_KEY: "<LLM API Key>" # Supports both GEMINI and Anthropic (Claude) API keys
+  LLM_MODEL: "<Model Name>" # Examples: gemini-2.5-flash, claude-3-5-sonnet-20241022
   LOG_LEVEL: "<LOGGING LEVEL>"
+  max_tokens: 1000 # Optional: Maximum tokens for responses
   user_id: "<UUID for the Agent Session>"
   app_name: "viaNexus_Agent"
   agentServers:
@@ -39,95 +40,63 @@ development:
 ```
 **Note:** Generate a software statement from the viaNexus api endpoint `v1/agents/register`
 
-Here are examples of how to use the SDK to create an Anthropic agent and run it:
+### Anthropic Client Setup
 
-### Anthropic Example Setup
+The `AnthropicClient` provides two usage modes for different integration scenarios:
+
+1. **Interactive REPL Mode**: For interactive chat sessions
+2. **Single Question Mode**: For programmatic integration where you need string responses
+
+#### Mode 1: Interactive REPL Chat
+
+Use this mode for interactive chat sessions where responses are streamed to the console:
 
 ```python
-import os
-import asyncio
-from vianexus_agent_sdk.clients.anthropic_client import AnthropicClient
-
-user_config = {} # see example config.yaml for setup
-
-async def main():
-    try:
-        client = AnthropicClient(user_config)
-        await client.run()
-    except Exception as e:
-        print(f"Connection setup failed: {e}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# See examples/clients/anthropic/interactive_repl_chat.py for full example
 ```
+
+#### Mode 2: Single Question Integration
+
+Use this mode when you need to integrate the client into your application and get programmatic responses:
+
+```python
+# See examples/clients/anthropic/single_questions.py for full example
+```
+
+#### Configuration from YAML File
+
+You can also load configuration from a YAML file:
+
+```python
+# See examples/clients/anthropic/config_from_yaml.py for full example
+```
+
+#### Integration in Your Application
+
+Here's how to integrate the client into a web application or service:
+
+```python
+# See examples/clients/anthropic/service_integration.py for full example
+```
+
+#### Key Differences Between Modes
+
+| Feature | Interactive REPL Mode | Single Question Mode |
+|---------|----------------------|---------------------|
+| Method | `client.run()` | `client.ask_single_question(question)` |
+| Output | Streams to console | Returns string |
+| Use Case | Interactive chat | Programmatic integration |
+| Message History | Persistent across questions | Isolated per question |
+| Streaming | Yes | No |
+
+The transport layer is established in our StreamableHTTPSetup class
+The connection and data layer is managed by the session, and is initialized in our BaseMCPClient class
 
 ### Gemini Example Setup
 Here's a basic example of how to use the SDK to create a Gemini agent and run it:
 
 ```python
-import asyncio
-from vianexus_agent_sdk.gemini.agents.llm_agent import GeminiLLMAgent
-from vianexus_agent_sdk.gemini.runners.runner import GeminiRunner
-from vianexus_agent_sdk.gemini.tools.agent_toolset import GeminiAgentToolset
-from vianexus_agent_sdk.providers.oauth import ViaNexusOAuthProvider
-# The following import is a patched fork of the adk-python which provides support for OAuth protocol through HTTP transport
-from google.adk.tools.agent_tool.agent_session_manager import StreamableHTTPConnectionParams
-
-async def main():
-    # Before anything set the GEMINI API KEY as an Environment variable
-    os.environ["GEMINI_API_KEY"] = config["LLM_API_KEY"]
-
-    # 1. Set up the OAuth provider and authenticate
-    # This will handle the OAuth 2.0 flow to authenticate with the viaNexus Agent server.
-    # It will start a local server to handle the redirect callback.
-    oauth_provider_manager = ViaNexusOAuthProvider(
-        server_url="URL for the viaNexus Agent Server>", # Discovery of Auth server, the server providing /.well-known/oauth-protected-resource
-        server_port="<Port for the viaNexus Agent Server>", # Replace with viaNexus Agent server port
-        software_statement="JWT software statement"
-    )
-    # Intialize the OAuth client and starts the Callback server for client side of OAuth2.0/2.1
-    oauth_provider = await oauth_provider_manager.initialize()
-
-    # 2. Create connection parameters from the.oauth_provider
-    connection_params = StreamableHTTPConnectionParams(
-        # Remove trailing forward slash
-            url=f"{server_url}:{server_port}/mcp",
-            auth=oauth_provider,
-    )
-
-    # 3. Create a toolset
-    agent_toolset = GeminiAgentToolset(connection_params=connection_params)
-
-    # 4. Create a Gemini agent
-    agent = GeminiLLMAgent(
-        model="<GEMINI model i.e. gemini-2.5-flash>",
-        tools=[agent_toolset],
-    )
-
-    # 5. Create a runner and execute the agent
-    runner = GeminiRunner(agent=agent, app_name="my-runner", user_id="UUID for the session", session_id="my-session")
-    await runner.initialize()
-
-     while True:
-        try:
-            query = input("Enter a query: ")
-            logging.debug(f"Query: {query}")
-            if query == "exit":
-                break
-            if not query:
-                continue
-            async for event in runner.run_async(query):
-                logging.info(f"Agent: {event}")
-        except KeyboardInterrupt:
-            logging.warning("Exiting...")
-            break
-        except Exception as e:
-            logging.warning(f"Error: {e}")
-            continue
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
+# See examples/clients/gemini/basic_setup.py for full example
 ```
 
 ## Contributing
