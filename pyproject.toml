@@ -19,7 +19,6 @@ classifiers = [
 dependencies = [
     "google-adk",
     "pydantic<3.0.0",
-    "google-generativeai==0.5.4",
     "google.genai==1.25.0",
     "requests==2.32.4",
     "httpx<1.0.0",
