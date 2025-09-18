@@ -39,15 +39,9 @@ app = FastAPI(lifespan=lifespan)
 async def ask_question(question: str):
     """API endpoint to ask financial questions."""
     try:
-        async with client.connection_manager.connection_context() as (readstream, writestream, get_session_id):
-            client.readstream = readstream
-            client.writestream = writestream
-            
-            if not await client.connect_to_server():
-                return {"error": "Failed to connect to MCP server"}
-                
-            response = await client.ask_single_question(question)
-            return {"response": response}
-            
+        # Connection is already established at startup
+        response = await client.ask_single_question(question)
+        return {"response": response}
+        
     except Exception as e:
         return {"error": str(e)}

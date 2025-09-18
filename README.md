@@ -38,56 +38,102 @@ development:
       server_port: <viaNexus Agent Port>
       software_statement: "<SOFTWARE STATEMENT>"
 ```
+
 **Note:** Generate a software statement from the viaNexus api endpoint `v1/agents/register`
+
+#### System Prompt Priority
+
+The AnthropicClient automatically determines the system prompt using this priority order:
+
+1. **Config Parameter** `system_prompt` (highest priority)
+2. **JWT Software Statement** `system_prompt` or `systemPrompt` field (automatic extraction)
+3. **Default Financial Analyst** prompt (fallback)
+
+The software statement JWT (provided by viaNexus API) may contain a `system_prompt` field that will be automatically extracted and used if no explicit system prompt is configured.
 
 ### Anthropic Client Setup
 
-The `AnthropicClient` provides two usage modes for different integration scenarios:
+The `AnthropicClient` provides flexible usage modes for different integration scenarios:
 
-1. **Interactive REPL Mode**: For interactive chat sessions
-2. **Single Question Mode**: For programmatic integration where you need string responses
-
-#### Mode 1: Interactive REPL Chat
-
-Use this mode for interactive chat sessions where responses are streamed to the console:
+#### Basic Usage
 
 ```python
-# See examples/clients/anthropic/interactive_repl_chat.py for full example
+import asyncio
+from vianexus_agent_sdk.clients.anthropic_client import AnthropicClient
+
+async def main():
+    config = {
+        "LLM_API_KEY": "your-anthropic-api-key",
+        "LLM_MODEL": "claude-3-5-sonnet-20241022",
+        "max_tokens": 1000,
+        # Optional: Override system prompt (otherwise uses JWT or default)
+        # "system_prompt": "You are a specialized trading advisor...",
+        "agentServers": {
+            "viaNexus": {
+                "server_url": "your-vianexus-server-url",
+                "server_port": 443,
+                "software_statement": "your-software-statement-jwt"  # May contain system_prompt
+            }
+        },
+    }
+    
+    client = AnthropicClient(config)
+    await client.setup_connection()
+    
+    # Ask single questions
+    response = await client.ask_single_question("What is AAPL's current price?")
+    print(response)
+    
+    # Ask questions with conversation history
+    response1 = await client.ask_question("What is Microsoft's stock price?", maintain_history=True)
+    response2 = await client.ask_question("How has it performed this quarter?", maintain_history=True)
+    
+    await client.cleanup()
+
+asyncio.run(main())
 ```
 
-#### Mode 2: Single Question Integration
 
-Use this mode when you need to integrate the client into your application and get programmatic responses:
+```
+
+#### Persistent Connections
+
+For applications requiring multiple requests with maintained context:
 
 ```python
-# See examples/clients/anthropic/single_questions.py for full example
+from vianexus_agent_sdk.clients.anthropic_client import PersistentAnthropicClient
+
+async def persistent_example():
+    client = PersistentAnthropicClient(config)
+    
+    # Establish persistent connection once
+    session_id = await client.establish_persistent_connection()
+    
+    # Multiple questions maintain context and connection
+    response1 = await client.ask_with_persistent_session("Analyze Apple's financials")
+    response2 = await client.ask_with_persistent_session("What about their competitors?")
+    
+    await client.cleanup()
 ```
 
-#### Configuration from YAML File
+#### Available Methods
 
-You can also load configuration from a YAML file:
+| Method | Description | History | Use Case |
+|--------|-------------|---------|----------|
+| `ask_single_question(question)` | Single isolated question | No | Independent queries |
+| `ask_question(question, maintain_history=True)` | Question with optional history | Optional | Flexible conversations |
+| `ask_with_persistent_session(question)` | Persistent session question | Yes | Long conversations |
+| `process_query(question)` | Streaming output | Yes | Interactive chat |
+| `run()` | Interactive REPL mode | Yes | Development/testing |
 
-```python
-# See examples/clients/anthropic/config_from_yaml.py for full example
-```
+#### Examples
 
-#### Integration in Your Application
-
-Here's how to integrate the client into a web application or service:
-
-```python
-# See examples/clients/anthropic/service_integration.py for full example
-```
-
-#### Key Differences Between Modes
-
-| Feature | Interactive REPL Mode | Single Question Mode |
-|---------|----------------------|---------------------|
-| Method | `client.run()` | `client.ask_single_question(question)` |
-| Output | Streams to console | Returns string |
-| Use Case | Interactive chat | Programmatic integration |
-| Message History | Persistent across questions | Isolated per question |
-| Streaming | Yes | No |
+- **Basic Usage**: `examples/clients/anthropic/single_questions.py`
+- **Service Integration**: `examples/clients/anthropic/service_integration.py`
+- **Persistent Sessions**: `examples/clients/anthropic/persistent_session.py`
+- **System Prompt Extraction**: `examples/clients/anthropic/streamable_setup_example.py`
+- **Interactive Mode**: `examples/clients/anthropic/interactive_repl_chat.py`
+- **YAML Configuration**: `examples/clients/anthropic/config_from_yaml.py`
 
 The transport layer is established in our StreamableHTTPSetup class
 The connection and data layer is managed by the session, and is initialized in our BaseMCPClient class
