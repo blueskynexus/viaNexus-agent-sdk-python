@@ -32,7 +32,7 @@ class MockGeminiClient:
         
         # Simulate the mixin initialization
         self.memory_store = memory_store
-        self.memory_session_id = session_id
+        self.memory_session_id = memory_session_id
         self.user_id = user_id
         self.provider_name = "gemini"
         self.memory_enabled = memory_store is not None
@@ -40,7 +40,7 @@ class MockGeminiClient:
         # Initialize memory mixin manually for demo
         self.mixin = ConversationMemoryMixin(
             memory_store=memory_store,
-            memory_session_id=session_id,
+            memory_session_id=memory_session_id,
             user_id=user_id,
             provider_name="gemini"
         )
@@ -216,7 +216,7 @@ async def demonstrate_session_switching():
     print(f"\n👤 User has {len(user_sessions)} active sessions:")
     
     for session in user_sessions:
-        print(f"  📝 {session.memory_session_id}")
+        print(f"  📝 {session.session_id}")
         print(f"     Created: {session.created_at.strftime('%Y-%m-%d %H:%M')}")
         print(f"     Messages: {session.message_count}")
         print(f"     Topic: {session.session_metadata}")

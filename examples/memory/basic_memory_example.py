@@ -191,7 +191,7 @@ async def demo_session_management():
     print(f"\n👤 User has {len(user_sessions)} sessions:")
     
     for session in user_sessions:
-        print(f"  📝 {session.memory_session_id} - {session.message_count} messages")
+        print(f"  📝 {session.session_id} - {session.message_count} messages")
     
     # Switch between sessions
     await client.memory_switch_session(sessions[0])

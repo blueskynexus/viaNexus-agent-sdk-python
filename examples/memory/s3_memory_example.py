@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
 
-from vianexus_agent_sdk.memory.base_memory import BaseMemoryStore, UniversalMessage, ConversationSession, MessageType
+from vianexus_agent_sdk.memory.base_memory import BaseMemoryStore, UniversalMessage, ConversationSession, MessageType, MessageRole
 
 
 class S3MemoryStore(BaseMemoryStore):
@@ -21,6 +21,13 @@ class S3MemoryStore(BaseMemoryStore):
     This is a template implementation showing how to create an S3 backend.
     In production, you would need to add proper error handling, retry logic,
     connection pooling, and other production considerations.
+    
+    IMPORTANT: When working with ConversationSession objects, always use:
+    - session.session_id (NOT session.memory_session_id)
+    - session.user_id
+    - session.last_activity
+    
+    The 'memory_session_id' is a property of the client/mixin, not the session object.
     """
     
     def __init__(
@@ -59,7 +66,7 @@ class S3MemoryStore(BaseMemoryStore):
     async def save_message(self, message: UniversalMessage) -> bool:
         """Save a message to S3."""
         try:
-            session_id = message.memory_session_id
+            session_id = message.session_id
             if not session_id:
                 logging.error("Message has no session_id")
                 return False
@@ -138,7 +145,8 @@ class S3MemoryStore(BaseMemoryStore):
     async def save_session(self, session: ConversationSession) -> bool:
         """Save session metadata to S3."""
         try:
-            session_key = self._get_session_key(session.memory_session_id)
+            # Note: ConversationSession uses session.session_id, not session.memory_session_id
+            session_key = self._get_session_key(session.session_id)
             
             # In real S3 implementation:
             # self.s3_client.put_object(
@@ -237,7 +245,7 @@ class S3MemoryStore(BaseMemoryStore):
                                 if user_id and message.user_id != user_id:
                                     continue
                                 
-                                if session_ids and message.memory_session_id not in session_ids:
+                                if session_ids and message.session_id not in session_ids:
                                     continue
                                 
                                 # Simple text search
@@ -281,7 +289,8 @@ class S3MemoryStore(BaseMemoryStore):
                         session_data = content
                         session = ConversationSession.from_dict(session_data)
                         if session.last_activity and session.last_activity < cutoff_date:
-                            sessions_to_delete.append(session.memory_session_id)
+                            # Correct: use session.session_id (not session.memory_session_id)
+                            sessions_to_delete.append(session.session_id)
                     except Exception:
                         pass
             
@@ -315,6 +324,7 @@ class S3MemoryStore(BaseMemoryStore):
                     try:
                         session_data = content
                         session = ConversationSession.from_dict(session_data)
+                        # Correct: use session.user_id (ConversationSession attribute)
                         if session.user_id == user_id:
                             sessions.append(session)
                     except Exception:
@@ -349,7 +359,7 @@ async def demo_s3_memory_store():
     
     # Create a session
     session = ConversationSession(
-        memory_session_id="s3_demo_session",
+        session_id="s3_demo_session",
         user_id="enterprise_user_001",
         client_type="anthropic",
         system_prompt="You are a financial advisor",
@@ -362,23 +372,23 @@ async def demo_s3_memory_store():
     # Save some messages
     messages = [
         UniversalMessage(
-            role="user",
+            role=MessageRole.USER,
             content="What's the outlook for renewable energy stocks?",
-            memory_session_id="s3_demo_session",
+            session_id="s3_demo_session",
             user_id="enterprise_user_001",
             provider="anthropic"
         ),
         UniversalMessage(
-            role="assistant", 
+            role=MessageRole.ASSISTANT, 
             content="Renewable energy stocks show strong potential...",
-            memory_session_id="s3_demo_session",
+            session_id="s3_demo_session",
             user_id="enterprise_user_001",
             provider="anthropic"
         ),
         UniversalMessage(
-            role="user",
+            role=MessageRole.USER,
             content="Which specific companies should I consider?",
-            memory_session_id="s3_demo_session", 
+            session_id="s3_demo_session", 
             user_id="enterprise_user_001",
             provider="anthropic"
         )
