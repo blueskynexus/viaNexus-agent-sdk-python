@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from vianexus_agent_sdk.clients.anthropic_client import AnthropicClient
+from vianexus_agent_sdk.clients.anthropic_client import PersistentAnthropicClient
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -24,8 +24,10 @@ async def lifespan(app: FastAPI):
         },
     }
     
-    client = AnthropicClient(config)
-    await client.setup_connection()
+    client = PersistentAnthropicClient(config)
+    # Establish persistent MCP connection that stays open for the service lifetime
+    session_id = await client.establish_persistent_connection()
+    print(f"Service ready with persistent MCP session: {session_id}")
     
     yield
     
@@ -39,8 +41,8 @@ app = FastAPI(lifespan=lifespan)
 async def ask_question(question: str):
     """API endpoint to ask financial questions."""
     try:
-        # Connection is already established at startup
-        response = await client.ask_single_question(question)
+        # Use the persistent connection established at startup
+        response = await client.ask_with_persistent_session(question)
         return {"response": response}
         
     except Exception as e:
