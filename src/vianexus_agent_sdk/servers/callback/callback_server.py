@@ -49,6 +49,7 @@ class CallbackServer():
         self.server = None
         self.thread = None
         self.callback_data = {"authorization_code": None, "state": None, "error": None}
+        self._running = False
 
     def _create_handler_with_data(self):
         """Create a handler class with access to callback data."""
@@ -62,22 +63,55 @@ class CallbackServer():
 
     def start(self):
         """Start the callback server in a background thread."""
-        handler_class = self._create_handler_with_data()
-        self.server = HTTPServer(("localhost", self.port), handler_class)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        logging.debug(f"Started callback server on http://localhost:{self.port}")
+        if self._running:
+            logging.warning("Callback server is already running")
+            return
+
+        try:
+            handler_class = self._create_handler_with_data()
+            self.server = HTTPServer(("localhost", self.port), handler_class)
+            self.thread = threading.Thread(target=self._serve_forever, daemon=True)
+            self.thread.start()
+            self._running = True
+            logging.debug(f"Started callback server on http://localhost:{self.port}")
+        except OSError as e:
+            if e.errno == 98:  # Address already in use
+                raise RuntimeError(f"Port {self.port} is already in use. Please try again or use a different port.") from e
+            else:
+                raise e
+
+    def _serve_forever(self):
+        """Serve forever in a thread-safe manner."""
+        try:
+            self.server.serve_forever()
+        except Exception as e:
+            logging.error(f"Callback server error: {e}")
 
     def stop(self):
         """Stop the callback server."""
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
-        if self.thread:
-            self.thread.join(timeout=1)
+        if not self._running:
+            return
+
+        try:
+            if self.server:
+                self.server.shutdown()
+                self.server.server_close()
+            if self.thread and self.thread.is_alive():
+                self.thread.join(timeout=2)
+                if self.thread.is_alive():
+                    logging.warning("Callback server thread did not stop gracefully")
+        except Exception as e:
+            logging.error(f"Error stopping callback server: {e}")
+        finally:
+            self._running = False
+            self.server = None
+            self.thread = None
 
     def wait_for_callback(self, timeout=300):
         """Wait for OAuth callback with timeout."""
+        if not self._running:
+            raise RuntimeError("Callback server is not running")
+
         start_time = time.time()
         while time.time() - start_time < timeout:
             if self.callback_data["authorization_code"]:
@@ -90,3 +124,7 @@ class CallbackServer():
     def get_state(self):
         """Get the received state parameter."""
         return self.callback_data["state"]
+
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        self.stop()
