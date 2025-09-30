@@ -427,7 +427,7 @@ class OpenAiClient(EnhancedMCPClient, ConversationMemoryMixin):
             conversation_context = "\n".join([
                 f"{msg['role']}: {msg['content']}" for msg in self.messages[-10:]  # Last 10 messages for context
             ])
-            current_input = f"{conversation_context}\nuser: {query}"
+            current_input = conversation_context
 
             text, tool_calls, assistant_msg = await self._stream_assistant(current_input, tools)
             
