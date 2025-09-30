@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vianexus_agent_sdk"
-version = "0.1.22"
+version = "0.1.23"
 authors = [
   { name="viaNexus", email="support@vianexus.com" },
 ]
@@ -24,7 +24,7 @@ dependencies = [
     "httpx<1.0.0",
     "anyio<5.8.0",
     "anthropic>=0.64.0",
-    "openai>=1.102.0",
+    "openai>=2.0.0",
     "aiofiles>=24.0.0",
 ]
 
