@@ -545,7 +545,7 @@ class OpenAiClient(EnhancedMCPClient, ConversationMemoryMixin):
                     f"{msg['role']}: {msg['content']}" for msg in self.messages[-10:]  # Last 10 messages
                 ])
                 
-                logging.info(f"Tools: {tools[0]}")
+                logging.info(f"Tools: {tools[0] if tools else 'No tools available'}")
                 
                 response = await self.openai.responses.create(
                     model=self.model,
