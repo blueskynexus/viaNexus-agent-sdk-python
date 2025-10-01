@@ -469,21 +469,6 @@ config = {
 
 ---
 
-## Anthropic Claude Integration
-
-async def persistent_example():
-    client = PersistentAnthropicClient(config)
-    
-    # Establish persistent connection once
-    session_id = await client.establish_persistent_connection()
-    
-    # Multiple questions maintain context and connection
-    response1 = await client.ask_with_persistent_session("Analyze Apple's financials")
-    response2 = await client.ask_with_persistent_session("What about their competitors?")
-    
-    await client.cleanup()
-```
-
 #### Available Methods
 
 | Method | Description | History | Use Case |
@@ -506,12 +491,6 @@ async def persistent_example():
 The transport layer is established in our StreamableHTTPSetup class
 The connection and data layer is managed by the session, and is initialized in our BaseMCPClient class
 
-### Gemini Example Setup
-Here's a basic example of how to use the SDK to create a Gemini agent and run it:
-
-```python
-# See examples/clients/gemini/basic_setup.py for full example
-```
 
 ## Contributing
 
