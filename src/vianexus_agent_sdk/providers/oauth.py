@@ -1,6 +1,7 @@
 import asyncio
 from typing import Any
 import requests
+import socket
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from vianexus_agent_sdk.servers.callback.callback_server import CallbackServer
@@ -33,6 +34,17 @@ class ViaNexusOAuthClientProvider(OAuthClientProvider):
             "POST", registration_url, json=registration_data, headers={"Content-Type": "application/json"}
         )
 
+def find_free_port(start_port=3030, max_attempts=100):
+    """Find a free port starting from start_port."""
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('localhost', port))
+                return port
+        except OSError:
+            continue
+    raise RuntimeError(f"Could not find a free port in range {start_port}-{start_port + max_attempts}")
+
 class ViaNexusOAuthProvider:
     """Manages MCP server connections and tool execution."""
 
@@ -41,24 +53,27 @@ class ViaNexusOAuthProvider:
         self.server_url: str = server_url
         self.server_port: str = server_port if server_port else "443"
         self.software_statement: str = software_statement
+        self.callback_server: CallbackServer | None = None
 
     async def initialize(self) -> ViaNexusOAuthClientProvider:
         """Initialize the server connection."""
         try:
-            callback_server = CallbackServer(port=3030)
-            callback_server.start()
+            # Find a free port for the callback server
+            callback_port = find_free_port()
+            self.callback_server = CallbackServer(port=callback_port)
+            self.callback_server.start()
 
             async def callback_handler() -> tuple[str, str | None]:
                 """Wait for OAuth callback and return auth code and state."""
                 try:
-                    auth_code = callback_server.wait_for_callback(timeout=300)
-                    return auth_code, callback_server.get_state()
+                    auth_code = self.callback_server.wait_for_callback(timeout=300)
+                    return auth_code, self.callback_server.get_state()
                 except Exception as e:
                     raise e
 
             client_metadata_dict = {
                 "client_name": "ViaNexus Auth Client",
-                "redirect_uris": ["http://localhost:3030/callback"],
+                "redirect_uris": [f"http://localhost:{callback_port}/callback"],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],
                 "token_endpoint_auth_method": "client_secret_post",
@@ -84,9 +99,23 @@ class ViaNexusOAuthProvider:
                 software_statement=self.software_statement
             )
         except Exception as e:
+            # Clean up callback server if initialization fails
+            if self.callback_server:
+                self.callback_server.stop()
+                self.callback_server = None
             raise e
 
         return oauth_provider
+
+    def cleanup(self):
+        """Clean up the callback server."""
+        if self.callback_server:
+            self.callback_server.stop()
+            self.callback_server = None
+
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        self.cleanup()
 
 
 class InMemoryTokenStorage(TokenStorage):

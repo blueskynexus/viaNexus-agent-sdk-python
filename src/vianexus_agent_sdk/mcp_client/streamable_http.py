@@ -24,17 +24,17 @@ class StreamableHttpSetup:
     Handles OAuth setup and yields a transport context for the MCP server.
     """
 
-    server: str
-    port: int
+    server_url: str
+    server_port: int
     software_statement: str
     auth_layer: Optional[ViaNexusOAuthClientProvider] = None
 
     @classmethod
-    def from_config(cls, config: BaseConfig) -> "StreamableHttpSetup":
+    def from_config(cls, config) -> "StreamableHttpSetup":
         # Defensive lookups. Fail early with KeyError if missing.
         return cls(
-            server=_normalize_server(config["server"]),
-            port=int(config["port"]),
+            server_url=_normalize_server(config["server_url"]),
+            server_port=int(config["server_port"]),
             software_statement=config["software_statement"],
         )
 
@@ -43,8 +43,8 @@ class StreamableHttpSetup:
         Initialize the OAuth client and start the local callback server.
         """
         provider = ViaNexusOAuthProvider(
-            server_url=self.server,
-            server_port=self.port,
+            server_url=self.server_url,
+            server_port=self.server_port,
             software_statement=self.software_statement,
         )
         self.auth_layer = await provider.initialize()
@@ -57,5 +57,5 @@ class StreamableHttpSetup:
         """
         if not self.auth_layer:
             raise RuntimeError("Auth not initialized. Call create_auth_layer() first.")
-        url = f"{self.server}:{self.port}/mcp"
+        url = f"{self.server_url}:{self.server_port}/mcp"
         return streamablehttp_client(url=url, auth=self.auth_layer)

@@ -1,24 +1,24 @@
 """
-Gemini Client implementation with universal memory management support.
+OpenAI Client implementation with universal memory management support.
 """
 import asyncio
 import json
 import logging
 import base64
 from contextlib import AsyncExitStack
-from google import genai
+from openai import AsyncOpenAI
 from typing import Any, Dict, List, Optional
 from vianexus_agent_sdk.mcp_client.enhanced_mcp_client import EnhancedMCPClient
 from vianexus_agent_sdk.memory import ConversationMemoryMixin, BaseMemoryStore
 from vianexus_agent_sdk.memory.stores.memory_memory import InMemoryStore
 
-# Default financial system prompt constant (matching other clients)
+# Default financial system prompt constant (matching Anthropic client)
 DEFAULT_FINANCIAL_SYSTEM_PROMPT = """You are a skilled Financial Analyst. You will use the tools provided to you to answer the question. You will only use the tools provided to you and not any other tools that are not provided to you. Use the `search` tool to find the appropriate dataset for the question. Use the `fetch` tool to fetch the data from the dataset."""
 
 
-class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
+class OpenAiClient(EnhancedMCPClient, ConversationMemoryMixin):
     """
-    Gemini Client with universal memory management support.
+    OpenAI Client with universal memory management support.
     
     System Prompt Priority Order:
     1. 'system_prompt' config parameter (highest priority)
@@ -41,11 +41,6 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
     The software_statement JWT is provided by viaNexus API. The client automatically
     extracts system prompts from the JWT payload, supporting both snake_case and 
     camelCase field names and nested 'claims' objects if needed.
-    
-    Note: Gemini API uses a different message format than OpenAI/Anthropic:
-    - Messages have 'role' and 'parts' structure
-    - System instructions are handled separately via system_instruction parameter
-    - Tool calls use function_call format in parts
     """
     
     @staticmethod
@@ -146,9 +141,9 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         memory_session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         **kwargs
-    ) -> "GeminiClient":
+    ) -> "OpenAiClient":
         """
-        Create GeminiClient with InMemoryStore for fast, temporary conversations.
+        Create OpenAiClient with InMemoryStore for fast, temporary conversations.
         Perfect for development, testing, and short-lived interactions.
         
         Args:
@@ -158,7 +153,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             **kwargs: Additional client parameters
             
         Returns:
-            GeminiClient configured with InMemoryStore
+            OpenAiClient configured with InMemoryStore
         """
         return cls(
             config=config,
@@ -177,9 +172,9 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         memory_session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         **kwargs
-    ) -> "GeminiClient":
+    ) -> "OpenAiClient":
         """
-        Create GeminiClient with FileMemoryStore for persistent local storage.
+        Create OpenAiClient with FileMemoryStore for persistent local storage.
         Conversations survive application restarts.
         
         Args:
@@ -190,7 +185,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             **kwargs: Additional client parameters
             
         Returns:
-            GeminiClient configured with FileMemoryStore
+            OpenAiClient configured with FileMemoryStore
         """
         from vianexus_agent_sdk.memory.stores.file_memory import FileMemoryStore
         
@@ -208,9 +203,9 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         cls,
         config: dict,
         **kwargs
-    ) -> "GeminiClient":
+    ) -> "OpenAiClient":
         """
-        Create GeminiClient without memory system for stateless interactions.
+        Create OpenAiClient without memory system for stateless interactions.
         Each conversation is independent with no history retention.
         
         Args:
@@ -218,7 +213,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             **kwargs: Additional client parameters
             
         Returns:
-            GeminiClient with memory disabled
+            OpenAiClient with memory disabled
         """
         return cls(
             config=config,
@@ -246,15 +241,15 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             memory_store=resolved_memory_store,
             memory_session_id=memory_session_id,
             user_id=user_id,
-            provider_name="gemini"
+            provider_name="openai"
         )
         
         # Initialize parent MCP client
         EnhancedMCPClient.__init__(self, config["agentServers"]["viaNexus"])
         
-        # Gemini-specific configuration
-        self.client = genai.Client(api_key=config.get("LLM_API_KEY"))
-        self.model_name = config.get("LLM_MODEL", "gemini-2.5-flash")
+        # OpenAI-specific configuration
+        self.openai = AsyncOpenAI(api_key=config.get("LLM_API_KEY"))
+        self.model = config.get("LLM_MODEL", "gpt-4o-mini")
         self.max_tokens = config.get("max_tokens", 1000)
         self.messages = []  # Local message cache
         self.max_history_length = config.get("max_history_length", 50)
@@ -275,213 +270,238 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         if not self.system_prompt:
             self.system_prompt = DEFAULT_FINANCIAL_SYSTEM_PROMPT
             logging.debug("Using default financial system prompt")
-    
-    async def _get_available_tools(self) -> Optional[genai.types.Tool]:
-        """Get list of available MCP tools formatted for Gemini API."""
+
+    @staticmethod
+    def _map_tool(t):
+        """Map MCP tool to OpenAI function format"""
+        schema = getattr(t, "inputSchema", None)
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            schema = {"type": "object", "properties": {}}
+
+        return {
+            "type": "function",
+            "name": t.name,
+            "description": (t.description or "").strip(),
+            "parameters": schema,  # leave as-is; not strict
+            "strict": False  # Allow flexible parameter validation
+        }
+
+    async def _get_available_tools(self) -> list:
+        """Get list of available MCP tools."""
         if not self.session:
-            return None
+            return []
         
         try:
             tool_list = await self.session.list_tools()
-            if not tool_list.tools:
-                return None
-            
-            logging.info(f"Tool list: {tool_list}")
-            formatted_tools = []
-            for tool in tool_list.tools:
-                # Convert MCP tool schema to Gemini format
-                schema = getattr(tool, "inputSchema", None)
-                if schema:
-                    gemini_schema = self._convert_schema_for_gemini(schema)
-                else:
-                    # Fallback schema for tools without proper schema
-                    gemini_schema = {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                
-                formatted_tool = {
-                    "name": tool.name,
-                    "description": tool.description or f"Tool: {tool.name}",
-                    "parameters": gemini_schema
-                }
-                formatted_tools.append(formatted_tool)
-            
-            return genai.types.Tool(function_declarations=formatted_tools)
-            
+            return [self._map_tool(t) for t in (tool_list.tools or [])]
         except Exception as e:
-            logging.error(f"Error listing tools: {e}")
-            return None
+            logging.error("Error listing tools: %s", e)
+            return []
+
+    async def _stream_assistant(self, input_text, tools, timeout=60):
+        """Stream assistant response with tool call handling using responses API"""
+        text_out = []
+        pending = {}
+
+        stream = await self.openai.responses.create(
+            model=self.model,
+            input=input_text,
+            instructions=self.system_prompt,
+            tools=tools or None,
+            stream=True,
+            max_output_tokens=self.max_tokens,
+            timeout=timeout,
+            tool_choice="auto",
+        )
+
+        async for event in stream:
+            # Handle different event types from responses API
+            if hasattr(event, 'type'):
+                if event.type == 'response.text.delta':
+                    if hasattr(event, 'delta') and event.delta:
+                        print(event.delta, end="", flush=True)
+                        text_out.append(event.delta)
+                elif event.type == 'response.tool_calls.delta':
+                    # Handle tool call deltas from responses API
+                    if hasattr(event, 'tool_calls'):
+                        for tc in event.tool_calls:
+                            idx = getattr(tc, "index", None)
+                            if idx is None:
+                                continue  # ignore until index arrives
+                            slot = pending.setdefault(idx, {"id": None, "name": None, "arguments": ""})
+
+                            if getattr(tc, "id", None):
+                                slot["id"] = tc.id
+
+                            fn = getattr(tc, "function", None)
+                            if fn:
+                                if getattr(fn, "name", None):
+                                    slot["name"] = fn.name
+                                if getattr(fn, "arguments", None):
+                                    slot["arguments"] += fn.arguments
+
+        # Finalize tool_calls: only keep complete ones
+        complete_calls = []
+        for idx in sorted(pending.keys()):
+            call = pending[idx]
+            if call["id"] and call["name"]:
+                complete_calls.append({
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call["arguments"] or "{}",
+                    },
+                })
+
+        assistant_msg = {"role": "assistant", "content": "".join(text_out)}
+        if complete_calls:
+            assistant_msg["tool_calls"] = complete_calls
+            # Return tool_calls keyed by id for execution
+            tool_calls_by_id = {c["id"]: c for c in complete_calls}
+            return assistant_msg["content"], tool_calls_by_id, assistant_msg
+        
+        return assistant_msg["content"], {}, assistant_msg
+
+    async def _execute_tool_calls(self, tool_calls_by_id: dict) -> list:
+        """Execute MCP tool calls and return results."""
+        result_blocks = []
+        
+        for call_id, call in tool_calls_by_id.items():
+            name = call["function"]["name"]
+            arg_str = call["function"]["arguments"] or "{}"
+            
+            try:
+                args = json.loads(arg_str) if arg_str.strip() else {}
+            except json.JSONDecodeError:
+                args = {"_raw": arg_str}
+
+            try:
+                logging.info(f"Calling tool: {name} with args: {args}")
+                result = await self.session.call_tool(name, args)
+                payload = getattr(result, "content", result)
+                
+                # Handle different payload types safely
+                text_payload = ""
+                if isinstance(payload, list):
+                    if len(payload) > 0 and hasattr(payload[0], 'text'):
+                        text_payload = payload[0].text
+                    elif len(payload) > 0:
+                        text_payload = str(payload[0])
+                    else:
+                        text_payload = "No content returned"
+                elif isinstance(payload, dict):
+                    text_payload = payload.get('text', payload.get('content', str(payload)))
+                else:
+                    text_payload = str(payload)
+                
+                result_blocks.append({
+                    "type": "tool_result",
+                    "tool_call_id": call_id,
+                    "content": text_payload[:100_000]  # Truncate large responses
+                })
+                
+            except Exception as e:
+                logging.error("Tool '%s' failed: %s", name, e)
+                result_blocks.append({
+                    "type": "tool_result",
+                    "tool_call_id": call_id,
+                    "content": f"Error calling tool '{name}': {e}"
+                })
+        
+        return result_blocks
 
     async def process_query(self, query: str) -> str:
         """
         Process query with streaming output (implements abstract method).
-        Maintains conversation history like other clients.
+        Maintains conversation history like Anthropic client.
         """
         if not self.session:
             return "Error: MCP session not initialized."
 
         tools = await self._get_available_tools()
-        self.messages.append(genai.types.Content(role="user", parts=[genai.types.Part.from_text(text=query)]))
+        self.messages.append({"role": "user", "content": query})
 
         while True:
-            try:
-                response = await self.client.aio.models.generate_content(
-                    model=self.model_name,
-                    contents=self.messages,
-                    config=genai.types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=self.max_tokens,
-                        system_instruction=self.system_prompt,
-                        tools=[tools] if tools else None
-                    )
-                )
+            # Prepare input text from conversation history for responses API
+            conversation_context = "\n".join([
+                f"{msg['role']}: {msg['content']}" for msg in self.messages[-10:]  # Last 10 messages for context
+            ])
+            current_input = conversation_context
 
-                # Check for a text response first
-                if response.text:
-                    print(response.text, end="", flush=True)
-                    self.messages.append(genai.types.Content(
-                        role="model", 
-                        parts=[genai.types.Part.from_text(text=response.text)]
-                    ))
-                    print()  # Add newline
-                    self._trim_history()
-                    return ""
-
-                # Check if the response contains content, to prevent NoneType error
-                if response.candidates and response.candidates[0].content:
-                    # Check if the model is calling a tool
-                    tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
-
-                    if tool_calls:
-                        # Add the model's tool-call response to the history
-                        self.messages.append(response.candidates[0].content)
-
-                        # Execute tools
-                        tool_results = await self._execute_tool_calls(tool_calls)
-                        self.messages.append(genai.types.Content(role="user", parts=tool_results))
-                    else:
-                        # Handle cases where there is content, but it's not a text or tool call
-                        logging.warning("Unexpected content format in Gemini response")
-                        break
-                else:
-                    # Handle the 'None' content case
-                    finish_reason = response.candidates[0].finish_reason if response.candidates else "unknown"
-                    logging.warning(f"Model response has no content. Finish reason: {finish_reason}")
-                    break
-                    
-            except Exception as e:
-                logging.error(f"Error in process_query: {e}")
-                return f"Error processing query: {e}"
-    
-    async def _execute_tool_calls(self, tool_calls: list) -> list:
-        """Execute MCP tool calls and return results formatted for Gemini."""
-        tool_results = []
-        
-        for tool_call in tool_calls:
-            name = tool_call.name
-            args = dict(tool_call.args) if tool_call.args else {}
+            text, tool_calls, assistant_msg = await self._stream_assistant(current_input, tools)
             
-            try:
-                logging.info(f"Calling tool: {name} with args: {args}")
-                result = await self.session.call_tool(name, args)
-                
-                # Handle different payload types safely
-                text_payload = ""
-                if hasattr(result, 'content') and result.content:
-                    payload = result.content
-                    if isinstance(payload, list):
-                        if len(payload) > 0 and hasattr(payload[0], 'text'):
-                            text_payload = payload[0].text
-                        elif len(payload) > 0:
-                            text_payload = str(payload[0])
-                        else:
-                            text_payload = "No content returned"
-                    elif isinstance(payload, dict):
-                        text_payload = payload.get('text', payload.get('content', str(payload)))
-                    else:
-                        text_payload = str(payload)
-                else:
-                    text_payload = str(result)
-                
-                # Create Gemini-formatted tool response
-                tool_response_part = genai.types.Part.from_function_response(
-                    name=name,
-                    response={"result": text_payload[:10000]}  # Truncate large responses
-                )
-                tool_results.append(tool_response_part)
-                
-            except Exception as e:
-                logging.error(f"Tool '{name}' failed: {e}")
-                # Create error response
-                error_response_part = genai.types.Part.from_function_response(
-                    name=name,
-                    response={"error": f"Tool execution failed: {e}"}
-                )
-                tool_results.append(error_response_part)
-        
-        return tool_results
-    
+            # Store assistant message in conversation history
+            self.messages.append({"role": "assistant", "content": text})
+
+            if not tool_calls:
+                print()
+                self._trim_history()
+                return ""
+
+            # Execute tools and add results to conversation
+            result_blocks = await self._execute_tool_calls(tool_calls)
+            
+            # Add tool results as user messages (OpenAI conversation pattern)
+            for result in result_blocks:
+                self.messages.append({
+                    "role": "user", 
+                    "content": f"Tool '{result['tool_call_id']}' result: {result['content']}"
+                })
+
+    def _trim_history(self):
+        """Keep conversation history within reasonable bounds"""
+        if len(self.messages) > self.max_history_length:
+            self.messages = self.messages[-self.max_history_length:]
+
     async def ask_single_question(self, question: str) -> str:
         """
         Ask a single question without maintaining conversation history.
-        Matches other client interfaces.
+        Matches Anthropic client interface.
         """
         if not self.session:
             return "Error: MCP session not initialized."
         
         # Get available tools
         tools = await self._get_available_tools()
+
         logging.info(f"Tools: {tools}")
         
-        # Create temporary message list for this single question
-        logging.info(f"Asking single question: {question}")
-        temp_messages = [genai.types.Content(role="user", parts=[genai.types.Part.from_text(text=question)])]
-        logging.info(f"Temp messages: {temp_messages}")
         response_content = ""
+        current_input = question
         
         while True:
-            try:
-                response = await self.client.aio.models.generate_content(
-                    model=self.model_name,
-                    contents=temp_messages,
-                    config=genai.types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=self.max_tokens,
-                        system_instruction=self.system_prompt,
-                        tools=[tools] if tools else None
-                    )
-                )
-                logging.info(f"Response: {response}")
-                # Extract text content
-                if response.text:
-                    response_content += response.text
-                
-                # Check for tool calls
-                logging.info(f"Response candidates: {response.candidates}")
-                if response.candidates and response.candidates[0].content:
-                    tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
-                    logging.info(f"Tool calls: {tool_calls}")
-                    if not tool_calls:
-                        break
-                    
-                    # Add model response to temp conversation
-                    temp_messages.append(response.candidates[0].content)
-                    logging.info(f"Temp messages: {temp_messages}")
-                    # Execute tools
-                    tool_results = await self._execute_tool_calls(tool_calls)
-                    temp_messages.append(genai.types.Content(role="user", parts=tool_results))
-                    logging.info(f"Temp messages: {temp_messages}")
-                else:
-                    break
-                    
-            except Exception as e:
-                logging.error(f"Error in ask_single_question: {e}")
-                return f"Error: {e}"
+            # Call OpenAI responses API (non-streaming for single questions)
+            response = await self.openai.responses.create(
+                model=self.model,
+                max_output_tokens=self.max_tokens,
+                input=current_input,
+                instructions=self.system_prompt,
+                tools=tools or None
+            )
+            
+            # Extract text content from responses API
+            if hasattr(response, 'output') and response.output:
+                if hasattr(response.output, 'content'):
+                    response_content += response.output.content
+            
+            # Check for tool calls in responses API format
+            if not hasattr(response, 'tool_calls') or not response.tool_calls:
+                break
+            
+            # Execute tools
+            tool_calls_by_id = {tc.id: {
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+            } for tc in response.tool_calls}
+            
+            result_blocks = await self._execute_tool_calls(tool_calls_by_id)
+            
+            # Add tool results to input for next iteration
+            tool_results = "\n".join([f"Tool result: {result['content']}" for result in result_blocks])
+            current_input = f"{current_input}\n{tool_results}"
         
         return response_content.strip()
-    
+
     async def ask_question(
         self, 
         question: str, 
@@ -505,8 +525,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         if use_memory and maintain_history and load_from_memory:
             memory_messages = await self.memory_load_history()
             if memory_messages:
-                # Convert memory messages to Gemini format
-                self.messages = self._convert_memory_to_gemini_messages(memory_messages)
+                self.messages = memory_messages
                 logging.debug(f"Loaded {len(memory_messages)} messages from memory")
         
         # Save user question to memory
@@ -515,63 +534,69 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         
         if maintain_history:
             # Add to ongoing conversation
-            self.messages.append(genai.types.Content(role="user", parts=[genai.types.Part.from_text(text=question)]))
+            self.messages.append({"role": "user", "content": question})
             
             tools = await self._get_available_tools()
             response_content = ""
             
             while True:
-                try:
-                    response = await self.client.aio.models.generate_content(
-                        model=self.model_name,
-                        contents=self.messages,
-                        config=genai.types.GenerateContentConfig(
-                            temperature=0.7,
-                            max_output_tokens=self.max_tokens,
-                            system_instruction=self.system_prompt,
-                            tools=[tools] if tools else None
-                        )
-                    )
+                # Prepare conversation context for responses API
+                conversation_context = "\n".join([
+                    f"{msg['role']}: {msg['content']}" for msg in self.messages[-10:]  # Last 10 messages
+                ])
+                
+                logging.info(f"Tools: {tools[0] if tools else 'No tools available'}")
+                
+                response = await self.openai.responses.create(
+                    model=self.model,
+                    max_output_tokens=self.max_tokens,
+                    input=conversation_context,
+                    instructions=self.system_prompt,
+                    tools=tools or None
+                )
+                
+                # Extract content from responses API
+                assistant_content = ""
+                if hasattr(response, 'output') and response.output:
+                    if hasattr(response.output, 'content'):
+                        assistant_content = response.output.content
+                        response_content += assistant_content
+                
+                self.messages.append({
+                    "role": "assistant", 
+                    "content": assistant_content
+                })
+                
+                # Save assistant response to memory
+                if use_memory:
+                    await self.memory_save_message("assistant", assistant_content)
+                
+                # Check for tool calls in responses API format
+                if not hasattr(response, 'tool_calls') or not response.tool_calls:
+                    break
+                
+                # Execute tools
+                tool_calls_by_id = {tc.id: {
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                } for tc in response.tool_calls}
+                
+                result_blocks = await self._execute_tool_calls(tool_calls_by_id)
+                
+                # Add tool results to conversation
+                for result in result_blocks:
+                    self.messages.append({
+                        "role": "user",
+                        "content": f"Tool result: {result['content']}"
+                    })
                     
-                    # Extract text content
-                    if response.text:
-                        response_content += response.text
-                    
-                    # Add assistant response to conversation
-                    if response.candidates and response.candidates[0].content:
-                        self.messages.append(response.candidates[0].content)
-                        
-                        # Save assistant response to memory
-                        if use_memory and response.text:
-                            await self.memory_save_message("assistant", response.text)
-                        
-                        # Check for tool calls
-                        tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
-                        
-                        if not tool_calls:
-                            break
-                        
-                        # Execute tools
-                        tool_results = await self._execute_tool_calls(tool_calls)
-                        self.messages.append(genai.types.Content(role="user", parts=tool_results))
-                        
-                        # Save tool results to memory
-                        if use_memory:
-                            for result_part in tool_results:
-                                if hasattr(result_part, 'function_response'):
-                                    await self.memory_save_message("user", str(result_part.function_response), "tool_result")
-                    else:
-                        break
-                        
-                except Exception as e:
-                    logging.error(f"Error in ask_question: {e}")
-                    return f"Error: {e}"
+                    # Save tool results to memory
+                    if use_memory:
+                        await self.memory_save_message("user", result['content'], "tool_result")
             
             self._trim_history()
             return response_content.strip()
         else:
             # Use single question method (no persistent history)
-            logging.info(f"Asking single question: {question}")
             result = await self.ask_single_question(question)
             
             # Still save to memory if requested (for searchability)
@@ -580,76 +605,11 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
                 await self.memory_save_message("assistant", result)
             
             return result
-    
-    def _convert_memory_to_gemini_messages(self, memory_messages: list) -> list:
-        """Convert universal memory messages to Gemini format."""
-        gemini_messages = []
-        
-        for msg in memory_messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            
-            # Map roles to Gemini format
-            if role == "assistant":
-                gemini_role = "model"
-            else:
-                gemini_role = "user"
-            
-            # Create Gemini message
-            gemini_msg = genai.types.Content(
-                role=gemini_role,
-                parts=[genai.types.Part.from_text(text=str(content))]
-            )
-            gemini_messages.append(gemini_msg)
-        
-        return gemini_messages
-
-    def _convert_schema_for_gemini(self, schema: dict) -> dict:
-        """
-        Recursively sanitizes an MCP tool schema to be compatible with Gemini's API
-        by keeping only the supported fields and ensuring proper format.
-        """
-        if not isinstance(schema, dict):
-            return {"type": "object", "properties": {}, "required": []}
-        
-        # Supported fields in Gemini's function declaration schema
-        supported_keys = {'type', 'description', 'required', 'properties', 'items', 'enum'}
-        gemini_schema = {}
-        
-        for key, value in schema.items():
-            if key in supported_keys:
-                if key == 'properties' and isinstance(value, dict):
-                    # Recursively convert nested properties
-                    gemini_schema[key] = {
-                        prop_name: self._convert_schema_for_gemini(prop_schema)
-                        for prop_name, prop_schema in value.items()
-                    }
-                elif key == 'items' and isinstance(value, dict):
-                    # Recursively convert array items schema
-                    gemini_schema[key] = self._convert_schema_for_gemini(value)
-                elif key == 'required' and isinstance(value, list):
-                    # Ensure required is a list of strings
-                    gemini_schema[key] = [str(item) for item in value]
-                else:
-                    gemini_schema[key] = value
-        
-        # Ensure required fields exist
-        if 'type' not in gemini_schema:
-            gemini_schema['type'] = 'object'
-        if gemini_schema['type'] == 'object' and 'properties' not in gemini_schema:
-            gemini_schema['properties'] = {}
-        
-        return gemini_schema
-
-    def _trim_history(self):
-        """Keep conversation history within reasonable bounds."""
-        if len(self.messages) > self.max_history_length:
-            self.messages = self.messages[-self.max_history_length:]
 
 
-class PersistentGeminiClient(GeminiClient):
+class PersistentOpenAiClient(OpenAiClient):
     """
-    Custom GeminiClient that maintains persistent MCP connections.
+    Custom OpenAiClient that maintains persistent MCP connections.
     Overrides the base class to keep connections open across multiple requests.
     """
     
@@ -820,6 +780,7 @@ class PersistentGeminiClient(GeminiClient):
             The response as a string
         """
         # Check connection health and auto-establish if needed
+        logging.info(f"Auto-establish connection: {auto_establish_connection}")
         if auto_establish_connection:
             if not self.is_connected or not await self._verify_connection_health():
                 try:
@@ -836,6 +797,7 @@ class PersistentGeminiClient(GeminiClient):
             raise RuntimeError("MCP session not initialized")
         
         # Use the ask_question method which integrates with memory system
+        logging.info(f"Asking question: {question}")
         return await self.ask_question(
             question=question,
             maintain_history=maintain_history,
