@@ -307,6 +307,168 @@ Features:
 
 ---
 
+## Google Gemini Integration
+
+The `GeminiClient` provides seamless integration with Google's Gemini models, featuring the same advanced memory management and persistent session capabilities as other clients.
+
+#### 🚀 Quick Start
+
+```python
+import asyncio
+from vianexus_agent_sdk.clients.gemini_client import GeminiClient
+
+async def main():
+    config = {
+        "LLM_API_KEY": "your-gemini-api-key",
+        "LLM_MODEL": "gemini-2.5-flash",  # or "gemini-pro", "gemini-pro-vision"
+        "max_tokens": 1500,
+        "system_prompt": "You are a financial AI assistant with real-time market access.",
+        "agentServers": {
+            "viaNexus": {
+                "server_url": "https://api.vianexus.com",
+                "server_port": 443,
+                "software_statement": "your-jwt-token"
+            }
+        }
+    }
+    
+    # Create client with memory
+    client = GeminiClient.with_in_memory_store(config)
+    await client.initialize()
+    
+    # Ask questions with automatic tool calling
+    response = await client.ask_question(
+        "What's Google's current stock price and how has it performed this quarter?",
+        maintain_history=True
+    )
+    print(response)
+    
+    await client.cleanup()
+
+asyncio.run(main())
+```
+
+#### 📚 Comprehensive Examples
+
+The SDK includes detailed examples for every use case:
+
+- **`examples/clients/gemini/basic_setup.py`** - Simple setup and single questions
+- **`examples/clients/gemini/conversation_with_history.py`** - Maintained conversation context
+- **`examples/clients/gemini/persistent_session.py`** - Long-running sessions
+- **`examples/clients/gemini/memory_integration.py`** - Different memory storage options
+- **`examples/clients/gemini/tool_calling_demo.py`** - MCP tool integration showcase
+
+#### 🧠 Memory Integration Options
+
+Choose the memory strategy that fits your application:
+
+```python
+# 1. In-Memory Store (fast, session-only)
+client = GeminiClient.with_in_memory_store(config, user_id="user_123")
+
+# 2. File-Based Storage (persistent across restarts)
+client = GeminiClient.with_file_memory_store(
+    config, 
+    storage_path="./conversations",
+    user_id="user_123",
+    memory_session_id="portfolio_analysis_001"
+)
+
+# 3. Stateless Mode (no memory, each query independent)
+client = GeminiClient.without_memory(config)
+```
+
+#### 🔄 Persistent Sessions
+
+For long-running conversations with maintained context and connection:
+
+```python
+from vianexus_agent_sdk.clients.gemini_client import PersistentGeminiClient
+
+async def portfolio_analysis_session():
+    client = PersistentGeminiClient(config)
+    
+    # Establish persistent connection
+    session_id = await client.establish_persistent_connection()
+    print(f"Session established: {session_id}")
+    
+    # Multiple related questions with full context
+    await client.ask_with_persistent_session("Analyze my tech stock portfolio")
+    await client.ask_with_persistent_session("What are the main risks?")
+    await client.ask_with_persistent_session("Should I rebalance now?")
+    
+    # Connection and context maintained throughout
+    await client.cleanup()
+```
+
+#### 🛠️ Tool Integration & Real-Time Data
+
+The Gemini client automatically integrates with viaNexus MCP tools:
+
+```python
+# Tools are automatically called when needed
+response = await client.ask_question(
+    "Compare Apple, Microsoft, and Google's P/E ratios and recommend the best buy"
+)
+# The AI will automatically:
+# 1. Call stock price tools for current data
+# 2. Calculate P/E ratios
+# 3. Analyze and provide recommendations
+```
+
+#### ⚡ Advanced Features (Gemini API)
+
+The Gemini client leverages Google's advanced AI capabilities:
+
+- **🎯 Multi-Modal Support**: Text, images, and structured outputs
+- **🔧 Enhanced Tool Integration**: Superior function calling with parallel execution
+- **💬 Native Conversation Management**: Built-in context handling and memory
+- **🧠 Advanced Reasoning**: Support for complex reasoning and analysis
+- **⚡ Optimized Performance**: Fast responses and efficient token usage
+
+#### 📋 Available Methods
+
+| Method | Description | History | Memory | Use Case |
+|--------|-------------|---------|--------|----------|
+| `ask_single_question(question)` | Single isolated question | ❌ No | ❌ No | Quick independent queries |
+| `ask_question(question, maintain_history=True)` | Flexible conversation | ✅ Optional | ✅ Optional | Most conversations |
+| `ask_with_persistent_session(question)` | Long-running session | ✅ Yes | ✅ Yes | Extended analysis |
+| `process_query(question)` | Streaming with tools | ✅ Yes | ✅ Yes | Interactive chat |
+
+#### ⚙️ Configuration Options
+
+```python
+config = {
+    # Gemini Settings
+    "LLM_API_KEY": "your-gemini-api-key",
+    "LLM_MODEL": "gemini-2.5-flash",  # gemini-pro, gemini-pro-vision
+    "max_tokens": 2000,              # Response length limit
+    "temperature": 0.7,              # Creativity (0.0-1.0)
+    
+    # System Behavior
+    "system_prompt": "Custom system prompt...",
+    "max_history_length": 50,        # Conversation memory limit
+    
+    # viaNexus Integration
+    "agentServers": {
+        "viaNexus": {
+            "server_url": "https://api.vianexus.com",
+            "server_port": 443,
+            "software_statement": "your-jwt-token"  # May contain system prompt
+        }
+    }
+}
+```
+
+#### 🎯 Gemini-Specific Features
+
+- **System Instructions**: Uses Gemini's native `system_instruction` parameter
+- **Multi-Part Messages**: Supports Gemini's rich message format with parts
+- **Function Responses**: Optimized for Gemini's function calling format
+- **Memory Conversion**: Automatic conversion between universal memory format and Gemini messages
+
+---
+
 ## Anthropic Claude Integration
 
 async def persistent_example():

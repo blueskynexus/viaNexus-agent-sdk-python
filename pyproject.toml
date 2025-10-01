@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vianexus_agent_sdk"
-version = "0.1.23"
+version = "0.1.24"
 authors = [
   { name="viaNexus", email="support@vianexus.com" },
 ]
@@ -17,9 +17,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "google-adk",
     "pydantic<3.0.0",
-    "google.genai==1.25.0",
+    "mcp>=1.15.0",
+    "google-generativeai==0.5.4",
+    "google-genai==1.25.0",
     "requests==2.32.4",
     "httpx<1.0.0",
     "anyio<5.8.0",
@@ -27,9 +28,6 @@ dependencies = [
     "openai>=2.0.0",
     "aiofiles>=24.0.0",
 ]
-
-[tool.uv.sources]
-google-adk = { git = "https://github.com/blueskynexus/adk-python", tag = "v0.1.2-alpha" }
 
 [project.urls]
 "Homepage" = "https://github.com/blueskynexus/viaNexus-agent-sdk-python"

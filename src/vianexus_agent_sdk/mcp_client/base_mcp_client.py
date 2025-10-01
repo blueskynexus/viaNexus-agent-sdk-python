@@ -73,7 +73,7 @@ class BaseMCPClient(ABC):
 
                 print("\nProcessing...")
                 response = await self.process_query(query)
-                if (response != ""):
+                if (response != "" and response is not None):
                     print("\n" + "=" * 50)
                     print("Response:")
                     print(response)
