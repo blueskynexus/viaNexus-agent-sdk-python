@@ -286,7 +286,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             if not tool_list.tools:
                 return None
             
-            logging.info(f"Tool list: {tool_list}")
+            logging.debug(f"Retrieved {len(tool_list.tools)} tools from MCP server")
             formatted_tools = []
             for tool in tool_list.tools:
                 # Convert MCP tool schema to Gemini format
@@ -364,12 +364,14 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
                     else:
                         # Handle cases where there is content, but it's not a text or tool call
                         logging.warning("Unexpected content format in Gemini response")
-                        break
+                        self._trim_history()
+                        return "No valid response content received from Gemini API"
                 else:
                     # Handle the 'None' content case
                     finish_reason = response.candidates[0].finish_reason if response.candidates else "unknown"
                     logging.warning(f"Model response has no content. Finish reason: {finish_reason}")
-                    break
+                    self._trim_history()
+                    return f"No response content available. Finish reason: {finish_reason}"
                     
             except Exception as e:
                 logging.error(f"Error in process_query: {e}")
@@ -384,7 +386,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             args = dict(tool_call.args) if tool_call.args else {}
             
             try:
-                logging.info(f"Calling tool: {name} with args: {args}")
+                logging.debug(f"Executing tool: {name}")
                 result = await self.session.call_tool(name, args)
                 
                 # Handle different payload types safely
@@ -433,12 +435,9 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         
         # Get available tools
         tools = await self._get_available_tools()
-        logging.info(f"Tools: {tools}")
         
         # Create temporary message list for this single question
-        logging.info(f"Asking single question: {question}")
         temp_messages = [genai.types.Content(role="user", parts=[genai.types.Part.from_text(text=question)])]
-        logging.info(f"Temp messages: {temp_messages}")
         response_content = ""
         
         while True:
@@ -453,26 +452,21 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
                         tools=[tools] if tools else None
                     )
                 )
-                logging.info(f"Response: {response}")
                 # Extract text content
                 if response.text:
                     response_content += response.text
                 
                 # Check for tool calls
-                logging.info(f"Response candidates: {response.candidates}")
                 if response.candidates and response.candidates[0].content:
                     tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
-                    logging.info(f"Tool calls: {tool_calls}")
                     if not tool_calls:
                         break
                     
                     # Add model response to temp conversation
                     temp_messages.append(response.candidates[0].content)
-                    logging.info(f"Temp messages: {temp_messages}")
                     # Execute tools
                     tool_results = await self._execute_tool_calls(tool_calls)
                     temp_messages.append(genai.types.Content(role="user", parts=tool_results))
-                    logging.info(f"Temp messages: {temp_messages}")
                 else:
                     break
                     
@@ -571,7 +565,6 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             return response_content.strip()
         else:
             # Use single question method (no persistent history)
-            logging.info(f"Asking single question: {question}")
             result = await self.ask_single_question(question)
             
             # Still save to memory if requested (for searchability)
