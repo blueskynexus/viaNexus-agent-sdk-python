@@ -319,10 +319,34 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         """
         Process query with streaming output (implements abstract method).
         Maintains conversation history like other clients.
+        Works with both persistent connections and creates temporary connections as needed.
         """
-        if not self.session:
-            return "Error: MCP session not initialized."
-
+        # Check if we have a persistent connection
+        if hasattr(self, '_connection_active') and self._connection_active and self.session:
+            # Use existing persistent connection
+            return await self._process_query_with_session(query)
+        else:
+            # Create temporary connection for this request
+            async with self.connection_manager.connection_context() as (readstream, writestream, get_session_id):
+                self.readstream = readstream
+                self.writestream = writestream
+                
+                if not await self.connect_to_server():
+                    return "Error: Failed to establish MCP connection."
+                
+                try:
+                    return await self._process_query_with_session(query)
+                finally:
+                    # Clean up temporary session
+                    if hasattr(self, 'session') and self.session:
+                        try:
+                            await self.session.close()
+                            self.session = None
+                        except Exception as e:
+                            logging.debug(f"Error closing temporary session: {e}")
+    
+    async def _process_query_with_session(self, query: str) -> str:
+        """Helper method that assumes session is already established."""
         tools = await self._get_available_tools()
         self.messages.append(genai.types.Content(role="user", parts=[genai.types.Part.from_text(text=query)]))
 
@@ -428,14 +452,38 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         
         return tool_results
     
+
     async def ask_single_question(self, question: str) -> str:
         """
         Ask a single question without maintaining conversation history.
-        Matches other client interfaces.
+        Works with both persistent connections and creates temporary connections as needed.
         """
-        if not self.session:
-            return "Error: MCP session not initialized."
-        
+        # Check if we have a persistent connection
+        if hasattr(self, '_connection_active') and self._connection_active and self.session:
+            # Use existing persistent connection
+            return await self._ask_single_question_with_session(question)
+        else:
+            # Create temporary connection for this request
+            async with self.connection_manager.connection_context() as (readstream, writestream, get_session_id):
+                self.readstream = readstream
+                self.writestream = writestream
+                
+                if not await self.connect_to_server():
+                    return "Error: Failed to establish MCP connection."
+                
+                try:
+                    return await self._ask_single_question_with_session(question)
+                finally:
+                    # Clean up temporary session
+                    if hasattr(self, 'session') and self.session:
+                        try:
+                            await self.session.close()
+                            self.session = None
+                        except Exception as e:
+                            logging.debug(f"Error closing temporary session: {e}")
+    
+    async def _ask_single_question_with_session(self, question: str) -> str:
+        """Helper method that assumes session is already established."""
         # Get available tools
         tools = await self._get_available_tools()
         
@@ -670,9 +718,14 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
     
     # Abstract method implementations
     async def initialize(self) -> None:
-        """Initialize the client and establish connections."""
+        """
+        Initialize the client by setting up authentication.
+        After initialization, choose either:
+        - establish_persistent_connection() for long-running sessions
+        - Use methods directly for per-request connections
+        """
         await self.setup_connection()
-        await self.connect_to_server()
+        logging.info("Client initialized - choose establish_persistent_connection() or use methods directly")
     
     async def cleanup(self) -> None:
         """Clean up resources and close connections."""
