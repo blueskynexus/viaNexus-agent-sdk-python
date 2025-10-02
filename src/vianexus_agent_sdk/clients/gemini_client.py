@@ -660,7 +660,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             if hasattr(msg, 'role'):
                 # UniversalMessage object
                 role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
-                content = msg.content
+                content = getattr(msg, 'content', '') or ''
             else:
                 # Dictionary format (fallback)
                 role = msg.get("role", "user")
