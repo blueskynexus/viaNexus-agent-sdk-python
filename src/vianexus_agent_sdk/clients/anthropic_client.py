@@ -11,12 +11,13 @@ from typing import Optional, Any
 from vianexus_agent_sdk.mcp_client.enhanced_mcp_client import EnhancedMCPClient
 from vianexus_agent_sdk.memory import ConversationMemoryMixin, BaseMemoryStore
 from vianexus_agent_sdk.memory.stores.memory_memory import InMemoryStore
+from .base_llm_client import BaseLLMClient, BasePersistentLLMClient
 
 # Default financial system prompt constant
 DEFAULT_FINANCIAL_SYSTEM_PROMPT = """You are a skilled Financial Analyst. You will use the tools provided to you to answer the question. You will only use the tools provided to you and not any other tools that are not provided to you. Use the `search` tool to find the appropriate dataset for the question. Use the `fetch` tool to fetch the data from the dataset."""
 
 
-class AnthropicClient(EnhancedMCPClient, ConversationMemoryMixin):
+class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
     """
     AnthropicClient with universal memory management support.
     
@@ -497,9 +498,25 @@ class AnthropicClient(EnhancedMCPClient, ConversationMemoryMixin):
                 await self.memory_save_message("assistant", result)
             
             return result
+    
+    # Abstract method implementations
+    async def initialize(self) -> None:
+        """Initialize the client and establish connections."""
+        await self.setup_connection()
+        await self.connect_to_server()
+    
+    async def cleanup(self) -> None:
+        """Clean up resources and close connections."""
+        if hasattr(self, 'session') and self.session:
+            try:
+                await self.session.close()
+            except Exception as e:
+                logging.error(f"Error closing session: {e}")
+    
+    # provider_name, model_name and system_prompt are already implemented via memory mixin, base class and instance attribute
 
 
-class PersistentAnthropicClient(AnthropicClient):
+class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
     """
     Custom AnthropicClient that maintains persistent MCP connections.
     Overrides the base class to keep connections open across multiple requests.

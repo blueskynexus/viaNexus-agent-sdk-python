@@ -11,12 +11,13 @@ from typing import Any, Dict, List, Optional
 from vianexus_agent_sdk.mcp_client.enhanced_mcp_client import EnhancedMCPClient
 from vianexus_agent_sdk.memory import ConversationMemoryMixin, BaseMemoryStore
 from vianexus_agent_sdk.memory.stores.memory_memory import InMemoryStore
+from .base_llm_client import BaseLLMClient, BasePersistentLLMClient
 
 # Default financial system prompt constant (matching other clients)
 DEFAULT_FINANCIAL_SYSTEM_PROMPT = """You are a skilled Financial Analyst. You will use the tools provided to you to answer the question. You will only use the tools provided to you and not any other tools that are not provided to you. Use the `search` tool to find the appropriate dataset for the question. Use the `fetch` tool to fetch the data from the dataset."""
 
 
-class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
+class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
     """
     Gemini Client with universal memory management support.
     
@@ -254,7 +255,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         
         # Gemini-specific configuration
         self.client = genai.Client(api_key=config.get("LLM_API_KEY"))
-        self.model_name = config.get("LLM_MODEL", "gemini-2.5-flash")
+        self._model_name = config.get("LLM_MODEL", "gemini-2.5-flash")
         self.max_tokens = config.get("max_tokens", 1000)
         self.messages = []  # Local message cache
         self.max_history_length = config.get("max_history_length", 50)
@@ -328,7 +329,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         while True:
             try:
                 response = await self.client.aio.models.generate_content(
-                    model=self.model_name,
+                    model=self._model_name,
                     contents=self.messages,
                     config=genai.types.GenerateContentConfig(
                         temperature=0.7,
@@ -443,7 +444,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         while True:
             try:
                 response = await self.client.aio.models.generate_content(
-                    model=self.model_name,
+                    model=self._model_name,
                     contents=temp_messages,
                     config=genai.types.GenerateContentConfig(
                         temperature=0.7,
@@ -517,7 +518,7 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
             while True:
                 try:
                     response = await self.client.aio.models.generate_content(
-                        model=self.model_name,
+                        model=self._model_name,
                         contents=self.messages,
                         config=genai.types.GenerateContentConfig(
                             temperature=0.7,
@@ -638,9 +639,25 @@ class GeminiClient(EnhancedMCPClient, ConversationMemoryMixin):
         """Keep conversation history within reasonable bounds."""
         if len(self.messages) > self.max_history_length:
             self.messages = self.messages[-self.max_history_length:]
+    
+    # Abstract method implementations
+    async def initialize(self) -> None:
+        """Initialize the client and establish connections."""
+        await self.setup_connection()
+        await self.connect_to_server()
+    
+    async def cleanup(self) -> None:
+        """Clean up resources and close connections."""
+        if hasattr(self, 'session') and self.session:
+            try:
+                await self.session.close()
+            except Exception as e:
+                logging.error(f"Error closing session: {e}")
+    
+    # provider_name, model_name and system_prompt are already implemented via memory mixin, base class and instance attribute
 
 
-class PersistentGeminiClient(GeminiClient):
+class PersistentGeminiClient(BasePersistentLLMClient, GeminiClient):
     """
     Custom GeminiClient that maintains persistent MCP connections.
     Overrides the base class to keep connections open across multiple requests.
