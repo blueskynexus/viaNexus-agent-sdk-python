@@ -125,16 +125,17 @@ class LLMClientFactory:
                     logging.info(f"Provider detected from API key pattern: {provider.value}")
                     return provider
         
-        # 4. Fallback - check for provider-specific config sections
-        if "anthropic" in str(config).lower():
-            logging.info("Provider detected from config content: anthropic")
-            return LLMProvider.ANTHROPIC
-        elif "openai" in str(config).lower():
-            logging.info("Provider detected from config content: openai")
-            return LLMProvider.OPENAI
-        elif "gemini" in str(config).lower():
-            logging.info("Provider detected from config content: gemini")
-            return LLMProvider.GEMINI
+        # 4. Fallback - check for provider-specific config keys (targeted approach)
+        # Only check specific config keys that are likely to contain provider info
+        provider_hint_keys = ["client_type", "llm_provider", "ai_provider", "model_provider"]
+        
+        for key in provider_hint_keys:
+            if key in config:
+                value = str(config[key]).lower()
+                for provider in LLMProvider:
+                    if provider.value in value:
+                        logging.info(f"Provider detected from config key '{key}': {provider.value}")
+                        return provider
         
         # Cannot detect provider
         raise ValueError(
