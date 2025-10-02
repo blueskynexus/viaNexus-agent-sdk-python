@@ -79,9 +79,11 @@ The factory automatically detects providers using these patterns:
 ```python
 # Standard client with auto-detection
 client = LLMClientFactory.create_client(config)
+await client.initialize()
 
 # Persistent client for long-running sessions
 persistent_client = LLMClientFactory.create_persistent_client(config)
+await persistent_client.initialize()
 
 # Client with specific memory configuration
 memory_client = LLMClientFactory.create_client_with_memory(
@@ -89,9 +91,17 @@ memory_client = LLMClientFactory.create_client_with_memory(
     memory_type="file",
     storage_path="./conversations"
 )
+await memory_client.initialize()
 
 # Explicit provider (overrides auto-detection)
 anthropic_client = LLMClientFactory.create_client(config, provider="anthropic")
+await anthropic_client.initialize()
+
+# Don't forget to cleanup when done
+await client.cleanup()
+await persistent_client.cleanup()
+await memory_client.cleanup()
+await anthropic_client.cleanup()
 ```
 
 ### 🧠 Memory Integration Options
@@ -99,6 +109,7 @@ anthropic_client = LLMClientFactory.create_client(config, provider="anthropic")
 ```python
 # 1. In-Memory Store (fast, session-only)
 client = LLMClientFactory.create_client_with_memory(config, memory_type="in_memory", user_id="user_123")
+await client.initialize()
 
 # 2. File-Based Storage (persistent across restarts)
 client = LLMClientFactory.create_client_with_memory(
@@ -107,9 +118,14 @@ client = LLMClientFactory.create_client_with_memory(
     storage_path="./conversations",
     user_id="user_123"
 )
+await client.initialize()
 
 # 3. Stateless Mode (no memory, each query independent)
 client = LLMClientFactory.create_client_with_memory(config, memory_type="none")
+await client.initialize()
+
+# Always cleanup when done
+await client.cleanup()
 ```
 
 ### 🔄 Persistent Sessions
@@ -118,6 +134,7 @@ client = LLMClientFactory.create_client_with_memory(config, memory_type="none")
 async def portfolio_analysis_session():
     # Create persistent client (works with any provider)
     persistent_client = LLMClientFactory.create_persistent_client(config)
+    await persistent_client.initialize()
     
     # Establish persistent connection
     session_id = await persistent_client.establish_persistent_connection()
@@ -131,7 +148,9 @@ async def portfolio_analysis_session():
     print(f"Session: {session_id}")
     print(response1, response2, response3)
     
+    # Cleanup
     await persistent_client.close_persistent_connection()
+    await persistent_client.cleanup()
 ```
 
 ### 🛠️ Tool Integration & Real-Time Data
@@ -139,6 +158,10 @@ async def portfolio_analysis_session():
 All clients automatically integrate with viaNexus MCP tools:
 
 ```python
+# Create and initialize client
+client = LLMClientFactory.create_client(config)
+await client.initialize()
+
 # Tools are automatically available - no additional setup needed
 response = await client.ask_question(
     "Get me the latest earnings data for Tesla and analyze the key metrics"
@@ -147,6 +170,9 @@ response = await client.ask_question(
 # 1. Use MCP tools to fetch Tesla's earnings data
 # 2. Analyze the data using the selected LLM
 # 3. Provide comprehensive insights
+
+print(response)
+await client.cleanup()
 ```
 
 ### 📚 Examples
