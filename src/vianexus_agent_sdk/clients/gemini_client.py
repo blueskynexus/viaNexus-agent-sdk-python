@@ -356,7 +356,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
 
                     if tool_calls:
-                        # Add the model's tool-call response to the history (only text parts to avoid warnings)
+                        # Add the model's response to the history (preserving function calls for context)
                         assistant_content = self._extract_text_only_content(response.candidates[0].content)
                         if assistant_content:
                             self.messages.append(assistant_content)
@@ -534,7 +534,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     if response.text:
                         response_content += response.text
                     
-                    # Add assistant response to conversation (only text parts to avoid warnings)
+                    # Add assistant response to conversation (preserving function calls for context)
                     if response.candidates and response.candidates[0].content:
                         assistant_content = self._extract_text_only_content(response.candidates[0].content)
                         if assistant_content:
@@ -581,21 +581,26 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
     
     def _extract_text_only_content(self, response_content: 'genai.types.Content') -> Optional['genai.types.Content']:
         """
-        Extract only text parts from a Gemini response content to avoid 'non-text parts' warnings.
+        Extract text and function call parts from a Gemini response content.
+        Preserves function calls to maintain conversation context for multi-turn tool interactions.
         
         Args:
             response_content: The original response content from Gemini API
             
         Returns:
-            A new Content object with only text parts, or None if no text parts found
+            A new Content object with text and function call parts, or None if no relevant parts found
         """
-        text_parts = []
+        relevant_parts = []
         for part in response_content.parts:
+            # Include text parts
             if hasattr(part, 'text') and part.text:
-                text_parts.append(genai.types.Part.from_text(text=part.text))
+                relevant_parts.append(genai.types.Part.from_text(text=part.text))
+            # Include function call parts to maintain tool interaction context
+            elif hasattr(part, 'function_call') and part.function_call:
+                relevant_parts.append(part)
         
-        if text_parts:
-            return genai.types.Content(role="model", parts=text_parts)
+        if relevant_parts:
+            return genai.types.Content(role="model", parts=relevant_parts)
         return None
     
     def _convert_memory_to_gemini_messages(self, memory_messages: list) -> list:
