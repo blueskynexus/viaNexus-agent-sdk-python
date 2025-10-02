@@ -8,7 +8,7 @@ This SDK allows you to build a powerful financial Agent or digital employee/assi
 To install the SDK, you can use uv:
 
 ```bash
-    uv add git+https://github.com/blueskynexus/viaNexus-agent-sdk-python --tag v0.1.19-pre
+    uv add git+https://github.com/blueskynexus/viaNexus-agent-sdk-python --tag v0.2.0-pre
 ```
 ### Dependencies
 - None required
@@ -35,7 +35,7 @@ The SDK provides a **unified factory pattern** that automatically detects and cr
 
 ```python
 import asyncio
-from vianexus_agent_sdk import LLMClientFactory
+from vianexus_agent_sdk.clients.llm_client_factory import LLMClientFactory
 
 async def main():
     # Configuration - provider auto-detected from model name
