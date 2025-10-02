@@ -765,6 +765,8 @@ class PersistentGeminiClient(BasePersistentLLMClient, GeminiClient):
         self._connection_context = None
         self._persistent_exit_stack = AsyncExitStack()
         self._mcp_session_id = None
+        self._connection_task_group = None
+        self._connection_task = None
         
         # For persistent clients, we can eagerly initialize the memory session
         # since they're typically used for longer-running conversations
@@ -871,10 +873,38 @@ class PersistentGeminiClient(BasePersistentLLMClient, GeminiClient):
         """Close the persistent MCP connection."""
         try:
             if self._persistent_exit_stack:
-                await self._persistent_exit_stack.aclose()
+                # Try to close the exit stack gracefully
+                try:
+                    await self._persistent_exit_stack.aclose()
+                    logging.debug("Successfully closed persistent exit stack")
+                except RuntimeError as e:
+                    if "different task" in str(e) or "cancel scope" in str(e):
+                        # This is expected when closing across task boundaries
+                        # The resources are likely already cleaned up by the connection context manager
+                        logging.debug(f"Exit stack cleanup skipped due to task boundary: {e}")
+                    else:
+                        logging.warning(f"Unexpected error closing exit stack: {e}")
+                except Exception as e:
+                    logging.warning(f"Error closing exit stack: {e}")
+                
+                # Always create a fresh exit stack for future connections
+                self._persistent_exit_stack = AsyncExitStack()
+            
+            # Reset connection state
             self._connection_active = False
             self._mcp_session_id = None
             self._connection_context = None
+            self._connection_task_group = None
+            self._connection_task = None
+            
+            # Force cleanup of any remaining session resources
+            if hasattr(self, 'session') and self.session:
+                try:
+                    # The session should be cleaned up by the exit stack, but just in case
+                    self.session = None
+                except Exception as e:
+                    logging.debug(f"Error clearing session reference: {e}")
+            
             logging.info("Closed persistent MCP connection")
         except Exception as e:
             logging.error(f"Error closing persistent MCP connection: {e}")
