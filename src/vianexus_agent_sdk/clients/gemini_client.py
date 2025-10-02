@@ -356,8 +356,10 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
 
                     if tool_calls:
-                        # Add the model's tool-call response to the history
-                        self.messages.append(response.candidates[0].content)
+                        # Add the model's tool-call response to the history (only text parts to avoid warnings)
+                        assistant_content = self._extract_text_only_content(response.candidates[0].content)
+                        if assistant_content:
+                            self.messages.append(assistant_content)
 
                         # Execute tools
                         tool_results = await self._execute_tool_calls(tool_calls)
@@ -411,7 +413,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                 # Create Gemini-formatted tool response
                 tool_response_part = genai.types.Part.from_function_response(
                     name=name,
-                    response={"result": text_payload[:10000]}  # Truncate large responses
+                    response={"result": text_payload[:1_000_000]}  # Truncate large responses (consistent with other clients)
                 )
                 tool_results.append(tool_response_part)
                 
@@ -532,9 +534,11 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     if response.text:
                         response_content += response.text
                     
-                    # Add assistant response to conversation
+                    # Add assistant response to conversation (only text parts to avoid warnings)
                     if response.candidates and response.candidates[0].content:
-                        self.messages.append(response.candidates[0].content)
+                        assistant_content = self._extract_text_only_content(response.candidates[0].content)
+                        if assistant_content:
+                            self.messages.append(assistant_content)
                         
                         # Save assistant response to memory
                         if use_memory and response.text:
@@ -574,6 +578,25 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                 await self.memory_save_message("assistant", result)
             
             return result
+    
+    def _extract_text_only_content(self, response_content: 'genai.types.Content') -> Optional['genai.types.Content']:
+        """
+        Extract only text parts from a Gemini response content to avoid 'non-text parts' warnings.
+        
+        Args:
+            response_content: The original response content from Gemini API
+            
+        Returns:
+            A new Content object with only text parts, or None if no text parts found
+        """
+        text_parts = []
+        for part in response_content.parts:
+            if hasattr(part, 'text') and part.text:
+                text_parts.append(genai.types.Part.from_text(text=part.text))
+        
+        if text_parts:
+            return genai.types.Content(role="model", parts=text_parts)
+        return None
     
     def _convert_memory_to_gemini_messages(self, memory_messages: list) -> list:
         """Convert universal memory messages to Gemini format."""
