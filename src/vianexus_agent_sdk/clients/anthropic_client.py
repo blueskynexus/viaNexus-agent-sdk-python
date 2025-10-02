@@ -394,9 +394,9 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     return await self._ask_single_question_with_session(question)
                 finally:
                     # Clean up temporary session
-                    if hasattr(self, 'session') and self.session:
+                    if hasattr(self, '_exit_stack') and self._exit_stack:
                         try:
-                            await self.session.close()
+                            await self._exit_stack.aclose()
                             self.session = None
                         except Exception as e:
                             logging.debug(f"Error closing temporary session: {e}")
@@ -536,9 +536,9 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
     
     async def cleanup(self) -> None:
         """Clean up resources and close connections."""
-        if hasattr(self, 'session') and self.session:
+        if hasattr(self, '_exit_stack') and self._exit_stack:
             try:
-                await self.session.close()
+                await self._exit_stack.aclose()
             except Exception as e:
                 logging.error(f"Error closing session: {e}")
     
