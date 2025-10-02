@@ -248,6 +248,11 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         # Initialize parent MCP client
         EnhancedMCPClient.__init__(self, config["agentServers"]["viaNexus"])
         
+        # Ensure _exit_stack is available for resource cleanup
+        if not hasattr(self, '_exit_stack') or self._exit_stack is None:
+            from contextlib import AsyncExitStack
+            self._exit_stack = AsyncExitStack()
+        
         # OpenAI-specific configuration
         self.openai = AsyncOpenAI(api_key=config.get("LLM_API_KEY"))
         self.model = config.get("LLM_MODEL", "gpt-4o-mini")

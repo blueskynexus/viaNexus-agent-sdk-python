@@ -253,6 +253,11 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         # Initialize parent MCP client
         EnhancedMCPClient.__init__(self, config["agentServers"]["viaNexus"])
         
+        # Ensure _exit_stack is available for resource cleanup
+        if not hasattr(self, '_exit_stack') or self._exit_stack is None:
+            from contextlib import AsyncExitStack
+            self._exit_stack = AsyncExitStack()
+        
         # Gemini-specific configuration
         self.client = genai.Client(api_key=config.get("LLM_API_KEY"))
         self._model_name = config.get("LLM_MODEL", "gemini-2.5-flash")
