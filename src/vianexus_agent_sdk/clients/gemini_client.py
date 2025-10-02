@@ -656,8 +656,15 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         gemini_messages = []
         
         for msg in memory_messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
+            # Handle both UniversalMessage objects and dict formats
+            if hasattr(msg, 'role'):
+                # UniversalMessage object
+                role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+                content = msg.content
+            else:
+                # Dictionary format (fallback)
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
             
             # Map roles to Gemini format
             if role == "assistant":
