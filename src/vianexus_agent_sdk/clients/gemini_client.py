@@ -382,7 +382,8 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                 # Check if the response contains content, to prevent NoneType error
                 if response.candidates and response.candidates[0].content:
                     # Check if the model is calling a tool
-                    tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
+                    content_parts = response.candidates[0].content.parts or []
+                    tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
 
                     if tool_calls:
                         # Add the model's response to the history (preserving function calls for context)
@@ -514,7 +515,8 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                 
                 # Check for tool calls
                 if response.candidates and response.candidates[0].content:
-                    tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
+                    content_parts = response.candidates[0].content.parts or []
+                    tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
                     if not tool_calls:
                         break
                     
@@ -598,7 +600,8 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                             await self.memory_save_message("assistant", response.text)
                         
                         # Check for tool calls
-                        tool_calls = [p.function_call for p in response.candidates[0].content.parts if hasattr(p, 'function_call') and p.function_call]
+                        content_parts = response.candidates[0].content.parts or []
+                        tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
                         
                         if not tool_calls:
                             break
@@ -644,7 +647,8 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             A new Content object with text and function call parts, or None if no relevant parts found
         """
         relevant_parts = []
-        for part in response_content.parts:
+        content_parts = response_content.parts or []
+        for part in content_parts:
             # Include text parts
             if hasattr(part, 'text') and part.text:
                 relevant_parts.append(genai.types.Part.from_text(text=part.text))

@@ -302,7 +302,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 
                 msg = await stream.get_final_message()
             
-            tool_uses = [b for b in msg.content if getattr(b, "type", None) == "tool_use"]
+            content_blocks = msg.content or []
+            tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
             self.messages.append({"role": "assistant", "content": msg.content})
             
             if not tool_uses:
@@ -451,14 +452,15 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             )
             
             # Extract text content
-            for block in response.content:
+            content_blocks = response.content or []
+            for block in content_blocks:
                 if getattr(block, "type", None) == "text":
                     response_content += block.text
             
             temp_messages.append({"role": "assistant", "content": response.content})
             
             # Check for tool uses
-            tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+            tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
             
             if not tool_uses:
                 break
@@ -517,7 +519,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 )
                 
                 # Extract text content
-                for block in response.content:
+                content_blocks = response.content or []
+                for block in content_blocks:
                     if getattr(block, "type", None) == "text":
                         response_content += block.text
                 
@@ -528,7 +531,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     await self.memory_save_message("assistant", response.content)
                 
                 # Check for tool uses
-                tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+                tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
                 
                 if not tool_uses:
                     break
