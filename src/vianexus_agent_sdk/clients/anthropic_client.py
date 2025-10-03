@@ -373,6 +373,30 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         return result_blocks
     
+    def _convert_memory_to_anthropic_messages(self, memory_messages: list) -> list:
+        """Convert universal memory messages to Anthropic format."""
+        anthropic_messages = []
+        
+        for msg in memory_messages:
+            # Handle both UniversalMessage objects and dict formats
+            if hasattr(msg, 'role'):
+                # UniversalMessage object
+                role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+                content = msg.content
+            else:
+                # Dictionary format (fallback)
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+            
+            # Create Anthropic message format
+            anthropic_msg = {
+                "role": role,
+                "content": str(content)
+            }
+            anthropic_messages.append(anthropic_msg)
+        
+        return anthropic_messages
+    
     def _trim_history(self):
         """Keep conversation history within reasonable bounds."""
         if len(self.messages) > self.max_history_length:
@@ -468,7 +492,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         if use_memory and maintain_history and load_from_memory:
             memory_messages = await self.memory_load_history()
             if memory_messages:
-                self.messages = memory_messages
+                # Convert memory messages to Anthropic format
+                self.messages = self._convert_memory_to_anthropic_messages(memory_messages)
                 logging.debug(f"Loaded {len(memory_messages)} messages from memory")
         
         # Save user question to memory
