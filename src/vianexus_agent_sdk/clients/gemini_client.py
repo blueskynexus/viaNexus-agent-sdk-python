@@ -520,8 +520,9 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     if not tool_calls:
                         break
                     
-                    # Add model response to temp conversation
-                    temp_messages.append(response.candidates[0].content)
+                    # Add model response to temp conversation (only if content exists)
+                    if response.candidates[0].content:
+                        temp_messages.append(response.candidates[0].content)
                     # Execute tools
                     tool_results = await self._execute_tool_calls(tool_calls)
                     temp_messages.append(genai.types.Content(role="user", parts=tool_results))
