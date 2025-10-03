@@ -455,6 +455,30 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     "content": f"Tool '{result['tool_call_id']}' result: {result['content']}"
                 })
 
+    def _convert_memory_to_openai_messages(self, memory_messages: list) -> list:
+        """Convert universal memory messages to OpenAI format."""
+        openai_messages = []
+        
+        for msg in memory_messages:
+            # Handle both UniversalMessage objects and dict formats
+            if hasattr(msg, 'role'):
+                # UniversalMessage object
+                role = msg.role.value if hasattr(msg.role, 'value') else str(msg.role)
+                content = msg.content
+            else:
+                # Dictionary format (fallback)
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+            
+            # Create OpenAI message format
+            openai_msg = {
+                "role": role,
+                "content": str(content)
+            }
+            openai_messages.append(openai_msg)
+        
+        return openai_messages
+
     def _trim_history(self):
         """Keep conversation history within reasonable bounds"""
         if len(self.messages) > self.max_history_length:
@@ -554,7 +578,8 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         if use_memory and maintain_history and load_from_memory:
             memory_messages = await self.memory_load_history()
             if memory_messages:
-                self.messages = memory_messages
+                # Convert memory messages to OpenAI format
+                self.messages = self._convert_memory_to_openai_messages(memory_messages)
                 logging.debug(f"Loaded {len(memory_messages)} messages from memory")
         
         # Save user question to memory
