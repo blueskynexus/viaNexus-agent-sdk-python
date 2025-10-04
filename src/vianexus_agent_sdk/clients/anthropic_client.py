@@ -1,11 +1,11 @@
 """
 AnthropicClient implementation with universal memory management support.
 """
-from anthropic import AsyncAnthropic
 import asyncio
 import logging
 import json
 import base64
+import re
 from contextlib import AsyncExitStack
 from typing import Optional, Any
 
@@ -14,6 +14,8 @@ from vianexus_agent_sdk.memory import ConversationMemoryMixin, BaseMemoryStore
 from vianexus_agent_sdk.memory.stores.memory_memory import InMemoryStore
 from .base_llm_client import BaseLLMClient, BasePersistentLLMClient
 
+from anthropic import AsyncAnthropic
+from anthropic.types.tool_use_block import ToolUseBlock
 # Default financial system prompt constant
 DEFAULT_FINANCIAL_SYSTEM_PROMPT = """You are a skilled Financial Analyst. You will use the tools provided to you to answer the question. You will only use the tools provided to you and not any other tools that are not provided to you. Use the `search` tool to find the appropriate dataset for the question. Use the `fetch` tool to fetch the data from the dataset."""
 
@@ -302,7 +304,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 
                 msg = await stream.get_final_message()
             
-            content_blocks = msg.content or []
+            content_blocks, _ = self._process_content_blocks_for_tool_use(msg.content)
             tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
             self.messages.append({"role": "assistant", "content": content_blocks})
             
@@ -403,6 +405,88 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         if len(self.messages) > self.max_history_length:
             self.messages = self.messages[-self.max_history_length:]
     
+    def _parse_tool_use_block_string(self, text: str) -> Optional[dict]:
+        """
+        Parse a ToolUseBlock string representation and extract the tool use information.
+        
+        Example input: "[ToolUseBlock(id='toolu_01Pqg5fhUE46bW3fz3w6k4jS', input={'endpoint': 'data', 'product': 'core', 'dataset_name': 'quote', 'symbols': 'V'}, name='fetch', type='tool_use')]"
+        
+        Returns: dict with 'type', 'id', 'name', 'input' keys or None if parsing fails
+        """
+        try:
+            # Use regex to extract ToolUseBlock content
+            pattern = r'ToolUseBlock\(([^)]+)\)'
+            match = re.search(pattern, text)
+            
+            if not match:
+                return None
+            
+            # Extract the content inside ToolUseBlock()
+            content = match.group(1)
+            
+            # Parse the parameters using regex
+            # Look for id='...', input={...}, name='...', type='...'
+            id_match = re.search(r"id='([^']+)'", content)
+            name_match = re.search(r"name='([^']+)'", content)
+            type_match = re.search(r"type='([^']+)'", content)
+            
+            # For input, we need to handle the dictionary structure
+            input_match = re.search(r"input=(\{[^}]+\})", content)
+            
+            if not all([id_match, name_match, type_match]):
+                return None
+            
+            tool_use_dict = {
+                'type': type_match.group(1),
+                'id': id_match.group(1),
+                'name': name_match.group(1),
+            }
+            
+            # Parse the input dictionary if present
+            if input_match:
+                input_str = input_match.group(1)
+                try:
+                    # Convert single quotes to double quotes for JSON parsing
+                    input_json = input_str.replace("\'", "\"")
+                    tool_use_dict['input'] = json.loads(input_json)
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, store as string
+                    tool_use_dict['input'] = input_str
+            
+            return tool_use_dict
+            
+        except Exception as e:
+            logging.error(f"Failed to parse ToolUseBlock string: {e}")
+            return None
+    
+    def _process_content_blocks_for_tool_use(self, content_blocks: list) -> tuple[list, str]:
+        """
+        Process content blocks to parse ToolUseBlock strings and extract text content.
+        
+        Args:
+            content_blocks: List of content blocks from Anthropic response
+            
+        Returns:
+            Tuple of (processed_content_blocks, response_text_content)
+        """
+        # Convert to mutable list if not already
+        processed_blocks = list(content_blocks or [])
+        response_content = ""
+        
+        for i, block in enumerate(processed_blocks):
+            if getattr(block, "type", None) == "text":
+                logging.debug(f"Original Text Block: {block.text}")
+                if "ToolUseBlock(" in block.text:
+                    #[ToolUseBlock(id='toolu_01Pqg5fhUE46bW3fz3w6k4jS', input={'endpoint': 'data', 'product': 'core', 'dataset_name': 'quote', 'symbols': 'V'}, name='fetch', type='tool_use')]
+                    tool_use_dict = self._parse_tool_use_block_string(block.text)
+                    if tool_use_dict:
+                        processed_blocks[i] = ToolUseBlock(**tool_use_dict)  # Replace the item in the list
+                        logging.debug(f"Tool use block ToolUseBlock String Parsed: {processed_blocks[i]}")
+                else:
+                    response_content += block.text
+        
+        return processed_blocks, response_content
+    
     async def ask_single_question(self, question: str) -> str:
         """
         Ask a single question without maintaining conversation history.
@@ -452,10 +536,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             )
             
             # Extract text content
-            content_blocks = response.content or []
-            for block in content_blocks:
-                if getattr(block, "type", None) == "text":
-                    response_content += block.text
+            content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
+            response_content += block_response_content
             
             temp_messages.append({"role": "assistant", "content": content_blocks})
             
@@ -519,10 +601,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 )
                 
                 # Extract text content
-                content_blocks = response.content or []
-                for block in content_blocks:
-                    if getattr(block, "type", None) == "text":
-                        response_content += block.text
+                content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
+                response_content += block_response_content
                 
                 self.messages.append({"role": "assistant", "content": content_blocks})
                 
