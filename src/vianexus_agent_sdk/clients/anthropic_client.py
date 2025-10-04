@@ -6,6 +6,7 @@ import logging
 import json
 import base64
 import re
+import ast
 from contextlib import AsyncExitStack
 from typing import Optional, Any
 
@@ -405,6 +406,63 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         if len(self.messages) > self.max_history_length:
             self.messages = self.messages[-self.max_history_length:]
     
+    def _extract_input_dict(self, content: str) -> Optional[str]:
+        """
+        Extract the input dictionary from ToolUseBlock content using proper brace matching.
+        
+        Args:
+            content: The content string from inside ToolUseBlock()
+            
+        Returns:
+            The input dictionary string or None if not found
+        """
+        # Find the start of input=
+        input_start = content.find("input=")
+        if input_start == -1:
+            return None
+        
+        # Find the opening brace
+        brace_start = content.find("{", input_start)
+        if brace_start == -1:
+            return None
+        
+        # Use brace matching to find the complete dictionary
+        brace_count = 0
+        i = brace_start
+        in_string = False
+        escape_next = False
+        
+        while i < len(content):
+            char = content[i]
+            
+            if escape_next:
+                escape_next = False
+                i += 1
+                continue
+            
+            if char == '\\':
+                escape_next = True
+                i += 1
+                continue
+            
+            if char == "'" and not in_string:
+                in_string = True
+            elif char == "'" and in_string:
+                in_string = False
+            elif not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        # Found the matching closing brace
+                        return content[brace_start:i+1]
+            
+            i += 1
+        
+        # If we get here, braces weren't properly matched
+        return None
+    
     def _parse_tool_use_block_string(self, text: str) -> Optional[dict]:
         """
         Parse a ToolUseBlock string representation and extract the tool use information.
@@ -430,8 +488,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             name_match = re.search(r"name='([^']+)'", content)
             type_match = re.search(r"type='([^']+)'", content)
             
-            # For input, we need to handle the dictionary structure
-            input_match = re.search(r"input=(\{[^}]+\})", content)
+            # For input, we need to handle the dictionary structure with proper brace matching
+            input_match = self._extract_input_dict(content)
             
             if not all([id_match, name_match, type_match]):
                 return None
@@ -444,14 +502,22 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             
             # Parse the input dictionary if present
             if input_match:
-                input_str = input_match.group(1)
+                input_str = input_match
                 try:
-                    # Convert single quotes to double quotes for JSON parsing
-                    input_json = input_str.replace("\'", "\"")
-                    tool_use_dict['input'] = json.loads(input_json)
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, store as string
-                    tool_use_dict['input'] = input_str
+                    # Use ast.literal_eval to safely parse Python dictionary literals
+                    # This properly handles single quotes in both keys and string values
+                    tool_use_dict['input'] = ast.literal_eval(input_str)
+                except (ValueError, SyntaxError) as e:
+                    # If literal_eval fails, try JSON parsing as fallback
+                    try:
+                        # Only convert outer quotes, not quotes within string values
+                        # This is a more conservative approach for JSON-like structures
+                        input_str = input_str.replace("\'", '\"')
+                        tool_use_dict['input'] = json.loads(input_str)
+                    except json.JSONDecodeError:
+                        # If both methods fail, store as string and log the issue
+                        logging.warning(f"Failed to parse tool input dictionary: {input_str}, error: {e}")
+                        tool_use_dict['input'] = input_str
             
             return tool_use_dict
             
