@@ -539,7 +539,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         self, 
         question: str, 
         maintain_history: bool = False,
-        use_memory: bool = True,
+        use_memory: bool = False,
         load_from_memory: bool = True
     ) -> str:
         """
@@ -941,8 +941,8 @@ class PersistentGeminiClient(BasePersistentLLMClient, GeminiClient):
     async def ask_with_persistent_session(
         self, 
         question: str, 
-        maintain_history: bool = True,
-        use_memory: bool = True,
+        maintain_history: bool = False,
+        use_memory: bool = False,
         auto_establish_connection: bool = True
     ) -> str:
         """
