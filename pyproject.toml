@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vianexus_agent_sdk"
-version = "1.0.0-pre10"
+version = "1.0.0-pre11"
 authors = [
   { name="viaNexus", email="support@vianexus.com" },
 ]

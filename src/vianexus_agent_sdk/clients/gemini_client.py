@@ -598,7 +598,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                         
                         # Save assistant response to memory
                         if use_memory and response.text:
-                            await self.memory_save_message("assistant", response.text)
+                            await self.memory_save_message("model", response.text)
                         
                         # Check for tool calls
                         content_parts = response.candidates[0].content.parts or []
@@ -632,7 +632,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             # Still save to memory if requested (for searchability)
             if use_memory:
                 await self.memory_save_message("user", question)
-                await self.memory_save_message("assistant", result)
+                await self.memory_save_message("model", result)
             
             return result
     
