@@ -261,7 +261,6 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         # Gemini-specific configuration
         self.client = genai.Client(api_key=config.get("LLM_API_KEY"))
         self._model_name = config.get("LLM_MODEL", "gemini-2.5-flash")
-        self.max_tokens = config.get("max_tokens", 1000)
         self.messages = []  # Local message cache
         self.max_history_length = config.get("max_history_length", 50)
         
@@ -362,7 +361,6 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     contents=self.messages,
                     config=genai.types.GenerateContentConfig(
                         temperature=0.7,
-                        max_output_tokens=self.max_tokens,
                         system_instruction=self.system_prompt,
                         tools=[tools] if tools else None
                     )
@@ -504,7 +502,6 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     contents=temp_messages,
                     config=genai.types.GenerateContentConfig(
                         temperature=0.7,
-                        max_output_tokens=self.max_tokens,
                         system_instruction=self.system_prompt,
                         tools=[tools] if tools else None
                     )
@@ -580,7 +577,6 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                         contents=self.messages,
                         config=genai.types.GenerateContentConfig(
                             temperature=0.7,
-                            max_output_tokens=self.max_tokens,
                             system_instruction=self.system_prompt,
                             tools=[tools] if tools else None
                         )
