@@ -15,6 +15,7 @@ class MessageRole(Enum):
     """Universal message roles across all LLM providers."""
     USER = "user"
     ASSISTANT = "assistant"
+    MODEL = "model"
     SYSTEM = "system"
     TOOL = "tool"
     FUNCTION = "function"  # For OpenAI compatibility

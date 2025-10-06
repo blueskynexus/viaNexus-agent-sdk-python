@@ -369,6 +369,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                 )
 
                 # Check for a text response first
+                logging.info(f"Usage Metadata: {response.usage_metadata}")
                 if response.text:
                     print(response.text, end="", flush=True)
                     self.messages.append(genai.types.Content(
@@ -510,6 +511,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                     )
                 )
                 # Extract text content
+                logging.info(f"Usage Metadata: {response.usage_metadata}")
                 if response.text:
                     response_content += response.text
                 
@@ -585,25 +587,25 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                             tools=[tools] if tools else None
                         )
                     )
-                    
+                    # Log usage metadata
+                    logging.info(f"Usage Metadata: {response.usage_metadata}")
                     # Extract text content
                     if response.text:
                         response_content += response.text
-                    
-                    # Add assistant response to conversation (preserving function calls for context)
+
+                    # Add model response to conversation (preserving function calls for context)
                     if response.candidates and response.candidates[0].content:
-                        assistant_content = self._extract_text_only_content(response.candidates[0].content)
-                        if assistant_content:
-                            self.messages.append(assistant_content)
+                        model_content = self._extract_text_only_content(response.candidates[0].content)
+                        if model_content:
+                            self.messages.append(model_content)
                         
-                        # Save assistant response to memory
-                        if use_memory and response.text:
-                            await self.memory_save_message("model", response.text)
+                        # Save model response to memory
+                        if use_memory and response_content:
+                            await self.memory_save_message("model", response_content)
                         
                         # Check for tool calls
                         content_parts = response.candidates[0].content.parts or []
                         tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
-                        
                         if not tool_calls:
                             break
                         
