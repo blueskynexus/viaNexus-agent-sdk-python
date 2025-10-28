@@ -5,6 +5,7 @@ File-based conversation storage for persistent local memory.
 import os
 import json
 import aiofiles
+import re
 from typing import List, Optional, Dict
 from datetime import datetime, timedelta
 import logging
@@ -32,13 +33,61 @@ class FileMemoryStore(BaseMemoryStore):
         self.sessions_dir.mkdir(exist_ok=True)
         self.messages_dir.mkdir(exist_ok=True)
     
+    def _validate_session_id(self, session_id: str) -> str:
+        """
+        Validate and sanitize session ID to prevent path traversal attacks.
+        
+        Args:
+            session_id: The session ID to validate
+            
+        Returns:
+            Sanitized session ID
+            
+        Raises:
+            ValueError: If session ID is invalid or potentially dangerous
+        """
+        if not session_id or not isinstance(session_id, str):
+            raise ValueError("Session ID must be a non-empty string")
+        
+        # Remove any whitespace
+        session_id = session_id.strip()
+        
+        if not session_id:
+            raise ValueError("Session ID cannot be empty or whitespace only")
+        
+        # Check length limits
+        if len(session_id) > 255:
+            raise ValueError("Session ID too long (max 255 characters)")
+        
+        # Only allow alphanumeric characters, hyphens, underscores, and dots
+        # This prevents path traversal attacks like "../../../etc/passwd"
+        if not re.match(r'^[a-zA-Z0-9._-]+$', session_id):
+            raise ValueError("Session ID contains invalid characters. Only alphanumeric, dots, hyphens, and underscores allowed")
+        
+        # Prevent directory traversal patterns
+        if '..' in session_id or session_id.startswith('.') or session_id.endswith('.'):
+            raise ValueError("Session ID cannot contain directory traversal patterns")
+        
+        # Prevent reserved names (Windows and Unix)
+        reserved_names = {
+            'con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'com5', 
+            'com6', 'com7', 'com8', 'com9', 'lpt1', 'lpt2', 'lpt3', 'lpt4', 
+            'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'
+        }
+        if session_id.lower() in reserved_names:
+            raise ValueError(f"Session ID '{session_id}' is a reserved system name")
+        
+        return session_id
+    
     def _get_session_file(self, session_id: str) -> Path:
-        """Get session metadata file path."""
-        return self.sessions_dir / f"{session_id}.json"
+        """Get session metadata file path with security validation."""
+        validated_id = self._validate_session_id(session_id)
+        return self.sessions_dir / f"{validated_id}.json"
     
     def _get_messages_file(self, session_id: str) -> Path:
-        """Get messages file path for a session."""
-        return self.messages_dir / f"{session_id}.jsonl"
+        """Get messages file path for a session with security validation."""
+        validated_id = self._validate_session_id(session_id)
+        return self.messages_dir / f"{validated_id}.jsonl"
     
     async def save_message(self, message: UniversalMessage) -> bool:
         """Save a message to file."""
@@ -57,8 +106,14 @@ class FileMemoryStore(BaseMemoryStore):
             logging.debug(f"Saved message to file: {message.role.value}")
             return True
             
+        except (OSError, IOError, PermissionError) as e:
+            logging.error(f"File system error saving message: {e}")
+            return False
+        except (json.JSONEncodeError, UnicodeEncodeError) as e:
+            logging.error(f"Encoding error saving message: {e}")
+            return False
         except Exception as e:
-            logging.error(f"Error saving message to file: {e}")
+            logging.error(f"Unexpected error saving message: {e}")
             return False
     
     async def get_conversation_history(
@@ -109,8 +164,14 @@ class FileMemoryStore(BaseMemoryStore):
             logging.debug(f"Retrieved {len(messages)} messages from file")
             return messages
             
+        except (OSError, IOError, PermissionError) as e:
+            logging.error(f"File system error retrieving conversation history: {e}")
+            return []
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logging.error(f"Decoding error retrieving conversation history: {e}")
+            return []
         except Exception as e:
-            logging.error(f"Error retrieving conversation history: {e}")
+            logging.error(f"Unexpected error retrieving conversation history: {e}")
             return []
     
     async def save_session(self, session: ConversationSession) -> bool:

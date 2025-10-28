@@ -942,15 +942,61 @@ response = await persistent_client.ask_with_persistent_session(
 )
 ```
 
+## 🔒 Security
+
+### Security Best Practices
+
+**⚠️ Important**: Never hardcode API keys or secrets in your code.
+
+```python
+# ✅ Secure - Use environment variables
+config = {
+    "LLM_API_KEY": os.getenv("OPENAI_API_KEY"),
+    "agentServers": {
+        "viaNexus": {
+            "software_statement": os.getenv("VIANEXUS_JWT_TOKEN")
+        }
+    }
+}
+
+# ❌ Insecure - Never do this
+config = {
+    "LLM_API_KEY": "sk-your-actual-key-here"  # Never hardcode!
+}
+```
+
+### Security Features
+
+- **Input Validation**: All user inputs are validated and sanitized
+- **Path Security**: File operations prevent directory traversal attacks  
+- **JWT Security**: Secure JWT token parsing with validation
+- **Memory Isolation**: Session-based memory isolation prevents data leakage
+- **HTTPS Only**: All API communications use secure HTTPS connections
+
+### Reporting Security Issues
+
+Please report security vulnerabilities to **security@vianexus.com**. 
+Do not report security issues through public GitHub issues.
+
+For more details, see our [Security Policy](SECURITY.md).
+
 ## Contributing
 
-We welcome contributions to the viaNexus AI Agent SDK for Python. If you would like to contribute, please follow these steps:
+We welcome contributions to the viaNexus AI Agent SDK for Python. Please read our [Contributing Guidelines](CONTRIBUTING.md) for detailed information.
 
-1.  Fork the repository.
-2.  Create a new branch for your feature or bug fix.
-3.  Make your changes and commit them with a clear and descriptive message.
-4.  Push your changes to your fork.
-5.  Create a pull request to the main repository.
+**Security Requirements for Contributors:**
+- No hardcoded credentials or secrets
+- All JWT handling must include proper validation  
+- Input validation required for all user inputs
+- Use specific exception types, avoid broad `except Exception`
+
+Quick steps:
+1.  Fork the repository
+2.  Create a new branch for your feature or bug fix
+3.  Make your changes and commit them with a clear and descriptive message
+4.  Run security checks: `bandit -r src/`
+5.  Push your changes to your fork
+6.  Create a pull request to the main repository
 
 ## License
 

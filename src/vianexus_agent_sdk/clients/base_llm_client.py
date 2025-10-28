@@ -5,6 +5,7 @@ Abstract base class defining the unified LLM client interface.
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
 from vianexus_agent_sdk.memory import BaseMemoryStore
+import logging
 
 
 class BaseLLMClient(ABC):
@@ -14,6 +15,43 @@ class BaseLLMClient(ABC):
     This interface ensures consistency across Anthropic, OpenAI, and Gemini clients,
     providing a common API for factory-based client creation and usage.
     """
+    
+    @staticmethod
+    def _validate_question(question: str) -> str:
+        """
+        Validate and sanitize user input questions.
+        
+        Args:
+            question: The user's question
+            
+        Returns:
+            Validated question string
+            
+        Raises:
+            ValueError: If question is invalid
+        """
+        if not question:
+            raise ValueError("Question cannot be None or empty")
+        
+        if not isinstance(question, str):
+            raise ValueError("Question must be a string")
+        
+        # Strip whitespace
+        question = question.strip()
+        
+        if not question:
+            raise ValueError("Question cannot be empty or whitespace only")
+        
+        # Check reasonable length limits
+        if len(question) > 100000:  # 100KB limit
+            raise ValueError("Question is too long (max 100,000 characters)")
+        
+        # Basic content validation - prevent potential injection attacks
+        # This is a basic check; more sophisticated validation could be added
+        if question.count('\x00') > 0:
+            raise ValueError("Question contains null bytes")
+        
+        return question
     
     # Factory Methods (Class Methods)
     @classmethod
