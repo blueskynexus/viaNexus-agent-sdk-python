@@ -31,8 +31,11 @@ class EnhancedMCPClient(BaseMCPClient):
         try:
             self.auth_layer = await self.connection_manager.create_auth_layer()
             return True
+        except (ConnectionError, TimeoutError, OSError) as e:
+            logging.error("Network error during connection setup: %s", e)
+            return False
         except Exception as e:
-            logging.error("Failed to setup connection: %s", e)
+            logging.error("Unexpected error during connection setup: %s", e)
             return False
 
     async def run(self) -> bool:
@@ -62,8 +65,11 @@ class EnhancedMCPClient(BaseMCPClient):
                     pass
 
                 await self.chat_loop()
+        except (ConnectionError, TimeoutError, OSError) as e:
+            logging.error("Network error during MCP connection: %s", e)
+            return False
         except Exception as e:
-            logging.error("Connection setup failed: %s", e)
+            logging.error("Unexpected error during MCP connection: %s", e)
             return False
 
         return True

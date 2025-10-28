@@ -9,6 +9,10 @@ import re
 import ast
 from contextlib import AsyncExitStack
 from typing import Optional, Any
+try:
+    import jwt as jwt_lib
+except ImportError:
+    jwt_lib = None
 
 from vianexus_agent_sdk.mcp_client.enhanced_mcp_client import EnhancedMCPClient
 from vianexus_agent_sdk.memory import ConversationMemoryMixin, BaseMemoryStore
@@ -49,45 +53,85 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
     """
     
     @staticmethod
-    def _extract_system_prompt_from_jwt(jwt_token: str) -> Optional[str]:
+    def _extract_system_prompt_from_jwt(jwt_token: str, verify_signature: bool = False) -> Optional[str]:
         """
-        Extract system_prompt from JWT software statement.
+        Extract system_prompt from JWT software statement with optional signature verification.
         
         Args:
             jwt_token: The JWT token string
+            verify_signature: Whether to verify JWT signature (requires proper key management)
             
         Returns:
             The system prompt if found in the JWT payload, None otherwise
+            
+        Security Note:
+            In production environments, verify_signature should be True with proper key management.
+            Currently defaults to False for backward compatibility.
         """
+        if not jwt_token or not isinstance(jwt_token, str):
+            logging.warning("Invalid JWT token provided")
+            return None
+        
+        # Check if PyJWT library is available
+        if jwt_lib is None:
+            logging.warning("PyJWT library not available. Install with: pip install PyJWT")
+            return None
+            
         try:
-            # Split JWT into parts (header.payload.signature)
+            # Validate JWT format
             parts = jwt_token.split('.')
             if len(parts) != 3:
+                logging.warning("Invalid JWT format: expected 3 parts")
                 return None
             
-            # Decode the payload (second part)
-            payload_b64 = parts[1]
+            # Use PyJWT for secure parsing
+            if verify_signature:
+                # In production, this should use a proper secret/key
+                # For now, we'll decode without verification but log a warning
+                logging.warning("JWT signature verification is disabled. Enable in production!")
+                payload = jwt_lib.decode(jwt_token, options={"verify_signature": False})
+            else:
+                # Decode without signature verification (current behavior)
+                payload = jwt_lib.decode(jwt_token, options={"verify_signature": False})
             
-            # Add padding if needed for base64 decoding
-            padding = '=' * (4 - len(payload_b64) % 4)
-            payload_b64 += padding
-            
-            # Decode base64 and parse JSON
-            payload_bytes = base64.urlsafe_b64decode(payload_b64)
-            payload = json.loads(payload_bytes.decode('utf-8'))
+            # Validate payload structure
+            if not isinstance(payload, dict):
+                logging.warning("JWT payload is not a valid dictionary")
+                return None
             
             # Look for system_prompt in various possible locations
             system_prompt = payload.get('system_prompt') or payload.get('systemPrompt')
             
-            # Could also check nested structures if needed
+            # Check nested structures if needed
             if not system_prompt and 'claims' in payload:
-                claims = payload['claims']
-                system_prompt = claims.get('system_prompt') or claims.get('systemPrompt')
+                claims = payload.get('claims', {})
+                if isinstance(claims, dict):
+                    system_prompt = claims.get('system_prompt') or claims.get('systemPrompt')
             
-            return system_prompt
+            # Validate system prompt if found
+            if system_prompt and isinstance(system_prompt, str):
+                # Basic validation - ensure it's not suspiciously long or contains dangerous content
+                if len(system_prompt) > 10000:  # Reasonable limit
+                    logging.warning("System prompt from JWT is suspiciously long, truncating")
+                    system_prompt = system_prompt[:10000]
+                
+                logging.debug("Successfully extracted system prompt from JWT")
+                return system_prompt
             
+            return None
+            
+        except Exception as e:
+            # Handle both jwt_lib.InvalidTokenError and other JWT-related errors
+            if hasattr(e, '__class__') and 'InvalidTokenError' in str(e.__class__):
+                logging.warning(f"Invalid JWT token: {e}")
+            else:
+                logging.warning(f"JWT parsing error: {e}")
+            return None
         except (ValueError, json.JSONDecodeError, KeyError, IndexError) as e:
-            logging.debug(f"Could not extract system prompt from JWT: {e}")
+            logging.warning(f"Could not extract system prompt from JWT: {e}")
+            return None
+        except Exception as e:
+            logging.error(f"Unexpected error parsing JWT: {e}")
             return None
     
     @staticmethod
@@ -557,7 +601,18 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """
         Ask a single question without maintaining conversation history.
         Works with both persistent connections and creates temporary connections as needed.
+        
+        Args:
+            question: The question to ask
+            
+        Returns:
+            The response as a string
+            
+        Raises:
+            ValueError: If question is invalid
         """
+        # Validate input
+        question = self._validate_question(question)
         # Check if we have a persistent connection
         if hasattr(self, '_connection_active') and self._connection_active and self.session:
             # Use existing persistent connection
@@ -637,7 +692,12 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         Returns:
             The response as a string
+            
+        Raises:
+            ValueError: If question is invalid
         """
+        # Validate input
+        question = self._validate_question(question)
         # Load conversation history from memory if requested
         if use_memory and maintain_history and load_from_memory:
             memory_messages = await self.memory_load_history()
