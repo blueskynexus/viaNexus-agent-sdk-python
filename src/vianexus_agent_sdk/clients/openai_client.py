@@ -67,6 +67,11 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         if not jwt_token or not isinstance(jwt_token, str):
             logging.warning("Invalid JWT token provided")
             return None
+        
+        # Check if PyJWT library is available
+        if jwt_lib is None:
+            logging.warning("PyJWT library not available. Install with: pip install PyJWT")
+            return None
             
         try:
             # Validate JWT format
@@ -111,8 +116,12 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             
             return None
             
-        except jwt_lib.InvalidTokenError as e:
-            logging.warning(f"Invalid JWT token: {e}")
+        except Exception as e:
+            # Handle both jwt_lib.InvalidTokenError and other JWT-related errors
+            if hasattr(e, '__class__') and 'InvalidTokenError' in str(e.__class__):
+                logging.warning(f"Invalid JWT token: {e}")
+            else:
+                logging.warning(f"JWT parsing error: {e}")
             return None
         except (ValueError, json.JSONDecodeError, KeyError, IndexError) as e:
             logging.warning(f"Could not extract system prompt from JWT: {e}")
