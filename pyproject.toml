@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vianexus_agent_sdk"
-version = "1.0.0-pre12"
+version = "1.0.0-pre13"
 authors = [
   { name="viaNexus", email="support@vianexus.com" },
 ]
@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.0.0,<3.0.0",
-    "mcp>=1.15.0",
+    "mcp==1.15.0",
     "google-generativeai==0.5.4",
     "google-genai==1.25.0",
     "requests>=2.32.4,<3.0.0",
