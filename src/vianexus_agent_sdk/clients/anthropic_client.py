@@ -293,8 +293,13 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             provider_name="anthropic"
         )
         
-        # Initialize parent MCP client
-        EnhancedMCPClient.__init__(self, config["agentServers"]["viaNexus"])
+        # Initialize parent MCP client with client context for tool filtering
+        client_context = config.get("client_context")
+        EnhancedMCPClient.__init__(
+            self,
+            config["agentServers"]["viaNexus"],
+            client_context=client_context
+        )
         
         # Ensure _exit_stack is available for resource cleanup
         if not hasattr(self, '_exit_stack') or self._exit_stack is None:
@@ -306,11 +311,12 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         self.model = config.get("LLM_MODEL", "claude-sonnet-4-20250514")
         self.max_tokens = config.get("max_tokens", 1000)
         self.messages = []  # Local message cache
+        self._last_artifacts = []  # Captured artifacts from tool calls (charts, tables, etc.)
         self.max_history_length = config.get("max_history_length", 50)
-        
+
         # Determine system prompt priority: config > JWT > default
         self.system_prompt = config.get("system_prompt")
-        
+
         if not self.system_prompt:
             # Try to extract from software_statement JWT stored in StreamableHttpSetup
             software_statement = self.connection_manager.software_statement
@@ -319,11 +325,28 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 if jwt_system_prompt:
                     self.system_prompt = jwt_system_prompt
                     logging.info("Using system prompt from software_statement JWT")
-        
+
         # Fall back to default if still not set
         if not self.system_prompt:
             self.system_prompt = DEFAULT_FINANCIAL_SYSTEM_PROMPT
             logging.debug("Using default financial system prompt")
+
+    @property
+    def last_artifacts(self) -> list[dict]:
+        """
+        Get artifacts captured from the last conversation turn.
+
+        Artifacts are structured data returned by tools like create_chart or create_table.
+        Each artifact has an 'artifact_type' field indicating its type (e.g., 'chart', 'table').
+
+        Returns:
+            List of artifact dictionaries captured during the last ask_question call.
+        """
+        return self._last_artifacts.copy()
+
+    def clear_artifacts(self) -> None:
+        """Clear the captured artifacts list."""
+        self._last_artifacts = []
     
     async def process_query(self, query: str) -> str:
         """
@@ -381,16 +404,16 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
     async def _execute_tool_calls(self, tool_uses: list) -> list:
         """Execute MCP tool calls and return results."""
         result_blocks = []
-        
+
         for tub in tool_uses:
             name = tub.name
             args = tub.input if isinstance(tub.input, dict) else {}
-            
+
             try:
                 logging.info(f"Calling tool: {name} with args: {args}")
                 result = await self.session.call_tool(name, args)
                 payload = result.content
-                
+
                 # Handle different payload types safely
                 text_payload = ""
                 if isinstance(payload, list):
@@ -404,13 +427,24 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     text_payload = payload.get('text', payload.get('content', str(payload)))
                 else:
                     text_payload = str(payload)
-                
+
+                # Check if the tool result is an artifact (chart, table, etc.)
+                # Artifacts have an "artifact_type" field in their JSON response
+                try:
+                    parsed_result = json.loads(text_payload)
+                    if isinstance(parsed_result, dict) and "artifact_type" in parsed_result:
+                        # Capture as artifact for OpenBB/external clients
+                        self._last_artifacts.append(parsed_result)
+                        logging.info(f"Captured artifact from tool '{name}': {parsed_result.get('artifact_type')}")
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Not JSON or not parseable, treat as regular text
+
                 result_blocks.append({
                     "type": "tool_result",
                     "tool_use_id": tub.id,
                     "content": [{"type": "text", "text": text_payload}],
                 })
-                
+
             except Exception as e:
                 logging.error("Tool '%s' failed: %s", name, e)
                 result_blocks.append({
@@ -418,7 +452,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     "tool_use_id": tub.id,
                     "content": [{"type": "text", "text": f"Error: {e}"}],
                 })
-        
+
         return result_blocks
     
     def _convert_memory_to_anthropic_messages(self, memory_messages: list) -> list:
@@ -613,6 +647,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """
         # Validate input
         question = self._validate_question(question)
+        # Clear artifacts from previous conversation turn
+        self.clear_artifacts()
         # Check if we have a persistent connection
         if hasattr(self, '_connection_active') and self._connection_active and self.session:
             # Use existing persistent connection
@@ -698,6 +734,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """
         # Validate input
         question = self._validate_question(question)
+        # Clear artifacts from previous conversation turn
+        self.clear_artifacts()
         # Load conversation history from memory if requested
         if use_memory and maintain_history and load_from_memory:
             memory_messages = await self.memory_load_history()
