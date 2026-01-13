@@ -24,6 +24,9 @@ from anthropic.types.tool_use_block import ToolUseBlock
 # Default financial system prompt constant
 DEFAULT_FINANCIAL_SYSTEM_PROMPT = """You are a skilled Financial Analyst. You will use the tools provided to you to answer the question. You will only use the tools provided to you and not any other tools that are not provided to you. Use the `search` tool to find the appropriate dataset for the question. Use the `fetch` tool to fetch the data from the dataset."""
 
+# Maximum number of tool call iterations to prevent infinite loops
+MAX_TOOL_ITERATIONS = 15
+
 
 class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
     """
@@ -357,8 +360,16 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         tools = await self._get_available_tools()
         self.messages.append({"role": "user", "content": query})
-        
+
+        iteration = 0
         while True:
+            iteration += 1
+            if iteration > MAX_TOOL_ITERATIONS:
+                logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in process_query, breaking loop")
+                print("\n[Max tool iterations reached]")
+                self._trim_history()
+                return ""
+
             async with self.anthropic.messages.stream(
                 model=self.model,
                 max_tokens=self.max_tokens,
@@ -369,18 +380,18 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 async for event in stream:
                     if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
                         print(event.delta.text, end="", flush=True)
-                
+
                 msg = await stream.get_final_message()
-            
+
             content_blocks, _ = self._process_content_blocks_for_tool_use(msg.content)
             tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
             self.messages.append({"role": "assistant", "content": content_blocks})
-            
+
             if not tool_uses:
                 print()
                 self._trim_history()
                 return ""
-            
+
             # Execute tools
             result_blocks = await self._execute_tool_calls(tool_uses)
             self.messages.append({"role": "user", "content": result_blocks})
@@ -410,7 +421,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             args = tub.input if isinstance(tub.input, dict) else {}
 
             try:
-                logging.info(f"Calling tool: {name} with args: {args}")
+                logging.info(f"Calling tool: {name}")
+                logging.debug(f"Tool args: {json.dumps(args, indent=2, default=str)}")
                 result = await self.session.call_tool(name, args)
                 payload = result.content
 
@@ -677,12 +689,18 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """Helper method that assumes session is already established."""
         # Get available tools
         tools = await self._get_available_tools()
-        
+
         # Create temporary message list for this single question
         temp_messages = [{"role": "user", "content": question}]
         response_content = ""
-        
+
+        iteration = 0
         while True:
+            iteration += 1
+            if iteration > MAX_TOOL_ITERATIONS:
+                logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in _ask_single_question_with_session, breaking loop")
+                break
+
             # Call Anthropic API
             response = await self.anthropic.messages.create(
                 model=self.model,
@@ -691,23 +709,23 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 tools=tools or None,
                 system=self.system_prompt
             )
-            
+
             # Extract text content
             content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
             response_content += block_response_content
-            
+
             temp_messages.append({"role": "assistant", "content": content_blocks})
-            
+
             # Check for tool uses
             tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
-            
+
             if not tool_uses:
                 break
-            
+
             # Execute tools
             result_blocks = await self._execute_tool_calls(tool_uses)
             temp_messages.append({"role": "user", "content": result_blocks})
-        
+
         return response_content.strip()
     
     async def ask_question(
@@ -751,11 +769,17 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         if maintain_history:
             # Add to ongoing conversation
             self.messages.append({"role": "user", "content": question})
-            
+
             tools = await self._get_available_tools()
             response_content = ""
-            
+
+            iteration = 0
             while True:
+                iteration += 1
+                if iteration > MAX_TOOL_ITERATIONS:
+                    logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in ask_question, breaking loop")
+                    break
+
                 response = await self.anthropic.messages.create(
                     model=self.model,
                     max_tokens=self.max_tokens,
@@ -763,31 +787,31 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     tools=tools or None,
                     system=self.system_prompt
                 )
-                
+
                 # Extract text content
                 content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
                 response_content += block_response_content
-                
+
                 self.messages.append({"role": "assistant", "content": content_blocks})
-                
+
                 # Save assistant response to memory
                 if use_memory:
                     await self.memory_save_message("assistant", content_blocks)
-                
+
                 # Check for tool uses
                 tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
-                
+
                 if not tool_uses:
                     break
-                
+
                 # Execute tools
                 result_blocks = await self._execute_tool_calls(tool_uses)
                 self.messages.append({"role": "user", "content": result_blocks})
-                
+
                 # Save tool results to memory
                 if use_memory:
                     await self.memory_save_message("user", result_blocks, "tool_result")
-            
+
             self._trim_history()
             return response_content.strip()
         else:
