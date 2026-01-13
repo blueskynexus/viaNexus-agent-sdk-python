@@ -1,14 +1,13 @@
 """
 AnthropicClient implementation with universal memory management support.
 """
-import asyncio
 import logging
 import json
-import base64
 import re
 import ast
 from contextlib import AsyncExitStack
-from typing import Optional, Any
+from typing import Optional
+
 try:
     import jwt as jwt_lib
 except ImportError:
@@ -357,6 +356,9 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """
         if not self.session:
             return "Error: MCP session not initialized."
+        
+        # Clear artifacts from previous conversation turn
+        self.clear_artifacts()
         
         tools = await self._get_available_tools()
         self.messages.append({"role": "user", "content": query})
