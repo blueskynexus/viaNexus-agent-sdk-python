@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from vianexus_agent_sdk.types.config import BaseConfig
 
@@ -19,10 +19,12 @@ class EnhancedMCPClient(BaseMCPClient):
         self,
         config: BaseConfig,
         connection_manager: Optional[StreamableHttpSetup] = None,
+        client_context: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.config = config
+        self.client_context = client_context
         self.connection_manager = (
-            connection_manager or StreamableHttpSetup.from_config(config)
+            connection_manager or StreamableHttpSetup.from_config(config, client_context=client_context)
         )
         self.auth_layer = None
         super().__init__(readstream=None, writestream=None)
