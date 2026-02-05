@@ -411,60 +411,96 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
 
         while True:
             try:
-                response = await self.client.aio.models.generate_content(
-                    model=self._model_name,
-                    contents=self.messages,
-                    config=genai.types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=self.max_tokens,
-                        system_instruction=self.system_prompt,
-                        tools=[tools] if tools else None
-                    )
-                )
+                if on_delta:
+                    # Streaming branch — incremental token delivery
+                    text_chunks = []
+                    tool_calls = []
+                    async for chunk in await self.client.aio.models.generate_content_stream(
+                        model=self._model_name,
+                        contents=self.messages,
+                        config=genai.types.GenerateContentConfig(
+                            temperature=0.7,
+                            max_output_tokens=self.max_tokens,
+                            system_instruction=self.system_prompt,
+                            tools=[tools] if tools else None
+                        )
+                    ):
+                        if chunk.text:
+                            on_delta(chunk.text)
+                            text_chunks.append(chunk.text)
+                        if chunk.candidates and chunk.candidates[0].content:
+                            for part in (chunk.candidates[0].content.parts or []):
+                                if hasattr(part, 'function_call') and part.function_call:
+                                    tool_calls.append(part.function_call)
 
-                # Check for a text response first
-                logging.info(f"Usage Metadata: {response.usage_metadata}")
-                if response.text:
-                    if on_delta:
-                        on_delta(response.text)
-                    else:
-                        print(response.text, end="", flush=True)
-                    self.messages.append(genai.types.Content(
-                        role="model",
-                        parts=[genai.types.Part.from_text(text=response.text)]
-                    ))
-                    if not on_delta:
-                        print()  # Add newline
-                    self._trim_history()
-                    return ""
-
-                # Check if the response contains content, to prevent NoneType error
-                if response.candidates and response.candidates[0].content:
-                    # Check if the model is calling a tool
-                    content_parts = response.candidates[0].content.parts or []
-                    tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
+                    chunk_text = "".join(text_chunks)
+                    if chunk_text:
+                        self.messages.append(genai.types.Content(
+                            role="model",
+                            parts=[genai.types.Part.from_text(text=chunk_text)]
+                        ))
+                        self._trim_history()
+                        return ""
 
                     if tool_calls:
-                        # Add the model's response to the history (preserving function calls for context)
-                        assistant_content = self._extract_text_only_content(response.candidates[0].content)
-                        if assistant_content:
-                            self.messages.append(assistant_content)
-
-                        # Execute tools
                         tool_results = await self._execute_tool_calls(tool_calls)
                         self.messages.append(genai.types.Content(role="user", parts=tool_results))
                     else:
-                        # Handle cases where there is content, but it's not a text or tool call
-                        logging.warning("Unexpected content format in Gemini response")
+                        logging.warning("Streaming response had no text and no tool calls")
                         self._trim_history()
                         return "No valid response content received from Gemini API"
                 else:
-                    # Handle the 'None' content case
-                    finish_reason = response.candidates[0].finish_reason if response.candidates else "unknown"
-                    logging.warning(f"Model response has no content. Finish reason: {finish_reason}")
-                    self._trim_history()
-                    return f"No response content available. Finish reason: {finish_reason}"
-                    
+                    # Non-streaming branch
+                    response = await self.client.aio.models.generate_content(
+                        model=self._model_name,
+                        contents=self.messages,
+                        config=genai.types.GenerateContentConfig(
+                            temperature=0.7,
+                            max_output_tokens=self.max_tokens,
+                            system_instruction=self.system_prompt,
+                            tools=[tools] if tools else None
+                        )
+                    )
+
+                    # Check for a text response first
+                    logging.info(f"Usage Metadata: {response.usage_metadata}")
+                    if response.text:
+                        print(response.text, end="", flush=True)
+                        self.messages.append(genai.types.Content(
+                            role="model",
+                            parts=[genai.types.Part.from_text(text=response.text)]
+                        ))
+                        print()  # Add newline
+                        self._trim_history()
+                        return ""
+
+                    # Check if the response contains content, to prevent NoneType error
+                    if response.candidates and response.candidates[0].content:
+                        # Check if the model is calling a tool
+                        content_parts = response.candidates[0].content.parts or []
+                        tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
+
+                        if tool_calls:
+                            # Add the model's response to the history (preserving function calls for context)
+                            assistant_content = self._extract_text_only_content(response.candidates[0].content)
+                            if assistant_content:
+                                self.messages.append(assistant_content)
+
+                            # Execute tools
+                            tool_results = await self._execute_tool_calls(tool_calls)
+                            self.messages.append(genai.types.Content(role="user", parts=tool_results))
+                        else:
+                            # Handle cases where there is content, but it's not a text or tool call
+                            logging.warning("Unexpected content format in Gemini response")
+                            self._trim_history()
+                            return "No valid response content received from Gemini API"
+                    else:
+                        # Handle the 'None' content case
+                        finish_reason = response.candidates[0].finish_reason if response.candidates else "unknown"
+                        logging.warning(f"Model response has no content. Finish reason: {finish_reason}")
+                        self._trim_history()
+                        return f"No response content available. Finish reason: {finish_reason}"
+
             except Exception as e:
                 logging.error(f"Error in process_query: {e}")
                 return f"Error processing query: {e}"
@@ -518,7 +554,7 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         return tool_results
     
 
-    async def ask_single_question(self, question: str) -> str:
+    async def ask_single_question(self, question: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """
         Ask a single question without maintaining conversation history.
         Works with both persistent connections and creates temporary connections as needed.
@@ -526,18 +562,18 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         # Check if we have a persistent connection
         if hasattr(self, '_connection_active') and self._connection_active and self.session:
             # Use existing persistent connection
-            return await self._ask_single_question_with_session(question)
+            return await self._ask_single_question_with_session(question, on_delta=on_delta)
         else:
             # Create temporary connection for this request
             async with self.connection_manager.connection_context() as (readstream, writestream, get_session_id):
                 self.readstream = readstream
                 self.writestream = writestream
-                
+
                 if not await self.connect_to_server():
                     return "Error: Failed to establish MCP connection."
-                
+
                 try:
-                    return await self._ask_single_question_with_session(question)
+                    return await self._ask_single_question_with_session(question, on_delta=on_delta)
                 finally:
                     # Clean up temporary session
                     if hasattr(self, '_exit_stack') and self._exit_stack:
@@ -546,53 +582,90 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                             self.session = None
                         except Exception as e:
                             logging.debug(f"Error closing temporary session: {e}")
-    
-    async def _ask_single_question_with_session(self, question: str) -> str:
+
+    async def _ask_single_question_with_session(self, question: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """Helper method that assumes session is already established."""
         # Get available tools
         tools = await self._get_available_tools()
-        
+
         # Create temporary message list for this single question
         temp_messages = [genai.types.Content(role="user", parts=[genai.types.Part.from_text(text=question)])]
         response_content = ""
-        
+
         while True:
             try:
-                response = await self.client.aio.models.generate_content(
-                    model=self._model_name,
-                    contents=temp_messages,
-                    config=genai.types.GenerateContentConfig(
-                        temperature=0.7,
-                        max_output_tokens=self.max_tokens,
-                        system_instruction=self.system_prompt,
-                        tools=[tools] if tools else None
-                    )
-                )
-                # Extract text content
-                logging.info(f"Usage Metadata: {response.usage_metadata}")
-                if response.text:
-                    response_content += response.text
-                
-                # Check for tool calls
-                if response.candidates and response.candidates[0].content:
-                    content_parts = response.candidates[0].content.parts or []
-                    tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
+                if on_delta:
+                    # Streaming branch
+                    text_chunks = []
+                    tool_calls = []
+                    async for chunk in await self.client.aio.models.generate_content_stream(
+                        model=self._model_name,
+                        contents=temp_messages,
+                        config=genai.types.GenerateContentConfig(
+                            temperature=0.7,
+                            max_output_tokens=self.max_tokens,
+                            system_instruction=self.system_prompt,
+                            tools=[tools] if tools else None
+                        )
+                    ):
+                        if chunk.text:
+                            on_delta(chunk.text)
+                            text_chunks.append(chunk.text)
+                        if chunk.candidates and chunk.candidates[0].content:
+                            for part in (chunk.candidates[0].content.parts or []):
+                                if hasattr(part, 'function_call') and part.function_call:
+                                    tool_calls.append(part.function_call)
+
+                    chunk_text = "".join(text_chunks)
+                    if chunk_text:
+                        response_content += chunk_text
+                        temp_messages.append(genai.types.Content(
+                            role="model",
+                            parts=[genai.types.Part.from_text(text=chunk_text)]
+                        ))
+
                     if not tool_calls:
                         break
-                    
-                    # Add model response to temp conversation (only if content exists)
-                    if response.candidates[0].content:
-                        temp_messages.append(response.candidates[0].content)
-                    # Execute tools
+
                     tool_results = await self._execute_tool_calls(tool_calls)
                     temp_messages.append(genai.types.Content(role="user", parts=tool_results))
                 else:
-                    break
-                    
+                    # Non-streaming branch
+                    response = await self.client.aio.models.generate_content(
+                        model=self._model_name,
+                        contents=temp_messages,
+                        config=genai.types.GenerateContentConfig(
+                            temperature=0.7,
+                            max_output_tokens=self.max_tokens,
+                            system_instruction=self.system_prompt,
+                            tools=[tools] if tools else None
+                        )
+                    )
+                    # Extract text content
+                    logging.info(f"Usage Metadata: {response.usage_metadata}")
+                    if response.text:
+                        response_content += response.text
+
+                    # Check for tool calls
+                    if response.candidates and response.candidates[0].content:
+                        content_parts = response.candidates[0].content.parts or []
+                        tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
+                        if not tool_calls:
+                            break
+
+                        # Add model response to temp conversation (only if content exists)
+                        if response.candidates[0].content:
+                            temp_messages.append(response.candidates[0].content)
+                        # Execute tools
+                        tool_results = await self._execute_tool_calls(tool_calls)
+                        temp_messages.append(genai.types.Content(role="user", parts=tool_results))
+                    else:
+                        break
+
             except Exception as e:
                 logging.error(f"Error in ask_single_question: {e}")
                 return f"Error: {e}"
-        
+
         return response_content.strip()
     
     async def ask_question(
@@ -636,50 +709,100 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             
             while True:
                 try:
-                    response = await self.client.aio.models.generate_content(
-                        model=self._model_name,
-                        contents=self.messages,
-                        config=genai.types.GenerateContentConfig(
-                            temperature=0.7,
-                            max_output_tokens=self.max_tokens,
-                            system_instruction=self.system_prompt,
-                            tools=[tools] if tools else None
-                        )
-                    )
-                    # Log usage metadata
-                    logging.info(f"Usage Metadata: {response.usage_metadata}")
-                    # Extract text content
-                    if response.text:
-                        response_content += response.text
+                    if on_delta:
+                        # Streaming branch
+                        text_chunks = []
+                        tool_calls = []
+                        async for chunk in await self.client.aio.models.generate_content_stream(
+                            model=self._model_name,
+                            contents=self.messages,
+                            config=genai.types.GenerateContentConfig(
+                                temperature=0.7,
+                                max_output_tokens=self.max_tokens,
+                                system_instruction=self.system_prompt,
+                                tools=[tools] if tools else None
+                            )
+                        ):
+                            if chunk.text:
+                                on_delta(chunk.text)
+                                text_chunks.append(chunk.text)
+                            # Collect function calls from chunks
+                            if chunk.candidates and chunk.candidates[0].content:
+                                for part in (chunk.candidates[0].content.parts or []):
+                                    if hasattr(part, 'function_call') and part.function_call:
+                                        tool_calls.append(part.function_call)
 
-                    # Add model response to conversation (preserving function calls for context)
-                    if response.candidates and response.candidates[0].content:
-                        model_content = self._extract_text_only_content(response.candidates[0].content)
-                        if model_content:
-                            self.messages.append(model_content)
-                        
-                        # Save model response to memory
-                        if use_memory and response_content:
-                            await self.memory_save_message("model", response_content)
-                        
-                        # Check for tool calls
-                        content_parts = response.candidates[0].content.parts or []
-                        tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
+                        chunk_text = "".join(text_chunks)
+                        if chunk_text:
+                            response_content += chunk_text
+
+                        # Add model response to conversation
+                        if chunk_text:
+                            self.messages.append(genai.types.Content(
+                                role="model",
+                                parts=[genai.types.Part.from_text(text=chunk_text)]
+                            ))
+
+                        if use_memory and chunk_text:
+                            await self.memory_save_message("model", chunk_text)
+
                         if not tool_calls:
                             break
-                        
+
                         # Execute tools
                         tool_results = await self._execute_tool_calls(tool_calls)
                         self.messages.append(genai.types.Content(role="user", parts=tool_results))
-                        
-                        # Save tool results to memory
+
                         if use_memory:
                             for result_part in tool_results:
                                 if hasattr(result_part, 'function_response'):
                                     await self.memory_save_message("user", str(result_part.function_response), "tool_result")
                     else:
-                        break
-                        
+                        # Non-streaming branch
+                        response = await self.client.aio.models.generate_content(
+                            model=self._model_name,
+                            contents=self.messages,
+                            config=genai.types.GenerateContentConfig(
+                                temperature=0.7,
+                                max_output_tokens=self.max_tokens,
+                                system_instruction=self.system_prompt,
+                                tools=[tools] if tools else None
+                            )
+                        )
+                        # Log usage metadata
+                        logging.info(f"Usage Metadata: {response.usage_metadata}")
+                        # Extract text content
+                        if response.text:
+                            response_content += response.text
+
+                        # Add model response to conversation (preserving function calls for context)
+                        if response.candidates and response.candidates[0].content:
+                            model_content = self._extract_text_only_content(response.candidates[0].content)
+                            if model_content:
+                                self.messages.append(model_content)
+
+                            # Save model response to memory
+                            if use_memory and response_content:
+                                await self.memory_save_message("model", response_content)
+
+                            # Check for tool calls
+                            content_parts = response.candidates[0].content.parts or []
+                            tool_calls = [p.function_call for p in content_parts if hasattr(p, 'function_call') and p.function_call]
+                            if not tool_calls:
+                                break
+
+                            # Execute tools
+                            tool_results = await self._execute_tool_calls(tool_calls)
+                            self.messages.append(genai.types.Content(role="user", parts=tool_results))
+
+                            # Save tool results to memory
+                            if use_memory:
+                                for result_part in tool_results:
+                                    if hasattr(result_part, 'function_response'):
+                                        await self.memory_save_message("user", str(result_part.function_response), "tool_result")
+                        else:
+                            break
+
                 except Exception as e:
                     logging.error(f"Error in ask_question: {e}")
                     return f"Error: {e}"
@@ -688,15 +811,15 @@ class GeminiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             return response_content.strip()
         else:
             # Use single question method (no persistent history)
-            result = await self.ask_single_question(question)
-            
+            result = await self.ask_single_question(question, on_delta=on_delta)
+
             # Still save to memory if requested (for searchability)
             if use_memory:
                 await self.memory_save_message("user", question)
                 await self.memory_save_message("model", result)
-            
+
             return result
-    
+
     def _extract_text_only_content(self, response_content: 'genai.types.Content') -> Optional['genai.types.Content']:
         """
         Extract text and function call parts from a Gemini response content.
@@ -1015,7 +1138,7 @@ class PersistentGeminiClient(BasePersistentLLMClient, GeminiClient):
             maintain_history: Whether to maintain conversation context (default: True)
             use_memory: Whether to use memory for context and persistence (default: True)
             auto_establish_connection: Whether to automatically establish MCP connection if needed (default: True)
-            on_delta: Optional callback invoked with each text chunk (not yet implemented for Gemini).
+            on_delta: Optional callback invoked with each text chunk for streaming.
 
         Returns:
             The response as a string

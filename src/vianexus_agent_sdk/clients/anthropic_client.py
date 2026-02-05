@@ -652,17 +652,18 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         return processed_blocks, response_content
     
-    async def ask_single_question(self, question: str) -> str:
+    async def ask_single_question(self, question: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """
         Ask a single question without maintaining conversation history.
         Works with both persistent connections and creates temporary connections as needed.
-        
+
         Args:
             question: The question to ask
-            
+            on_delta: Optional callback invoked with each text chunk for streaming.
+
         Returns:
             The response as a string
-            
+
         Raises:
             ValueError: If question is invalid
         """
@@ -673,18 +674,18 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         # Check if we have a persistent connection
         if hasattr(self, '_connection_active') and self._connection_active and self.session:
             # Use existing persistent connection
-            return await self._ask_single_question_with_session(question)
+            return await self._ask_single_question_with_session(question, on_delta=on_delta)
         else:
             # Create temporary connection for this request
             async with self.connection_manager.connection_context() as (readstream, writestream, get_session_id):
                 self.readstream = readstream
                 self.writestream = writestream
-                
+
                 if not await self.connect_to_server():
                     return "Error: Failed to establish MCP connection."
-                
+
                 try:
-                    return await self._ask_single_question_with_session(question)
+                    return await self._ask_single_question_with_session(question, on_delta=on_delta)
                 finally:
                     # Clean up temporary session
                     if hasattr(self, '_exit_stack') and self._exit_stack:
@@ -694,7 +695,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                         except Exception as e:
                             logging.debug(f"Error closing temporary session: {e}")
     
-    async def _ask_single_question_with_session(self, question: str) -> str:
+    async def _ask_single_question_with_session(self, question: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """Helper method that assumes session is already established."""
         # Get available tools
         tools = await self._get_available_tools()
@@ -710,14 +711,27 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in _ask_single_question_with_session, breaking loop")
                 break
 
-            # Call Anthropic API
-            response = await self.anthropic.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=temp_messages,
-                tools=tools or None,
-                system=self.system_prompt
-            )
+            if on_delta:
+                async with self.anthropic.messages.stream(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    messages=temp_messages,
+                    tools=tools or None,
+                    system=self.system_prompt
+                ) as stream:
+                    async for event in stream:
+                        if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                            on_delta(event.delta.text)
+                    response = await stream.get_final_message()
+            else:
+                # Call Anthropic API
+                response = await self.anthropic.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    messages=temp_messages,
+                    tools=tools or None,
+                    system=self.system_prompt
+                )
 
             # Extract text content
             content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
@@ -839,15 +853,15 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             return response_content.strip()
         else:
             # Use single question method (no persistent history)
-            result = await self.ask_single_question(question)
-            
+            result = await self.ask_single_question(question, on_delta=on_delta)
+
             # Still save to memory if requested (for searchability)
             if use_memory:
                 await self.memory_save_message("user", question)
                 await self.memory_save_message("assistant", result)
-            
+
             return result
-    
+
     # Abstract method implementations
     async def initialize(self) -> None:
         """

@@ -532,7 +532,7 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         if len(self.messages) > self.max_history_length:
             self.messages = self.messages[-self.max_history_length:]
 
-    async def ask_single_question(self, question: str) -> str:
+    async def ask_single_question(self, question: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """
         Ask a single question without maintaining conversation history.
         Works with both persistent connections and creates temporary connections as needed.
@@ -540,18 +540,18 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         # Check if we have a persistent connection
         if hasattr(self, '_connection_active') and self._connection_active and self.session:
             # Use existing persistent connection
-            return await self._ask_single_question_with_session(question)
+            return await self._ask_single_question_with_session(question, on_delta=on_delta)
         else:
             # Create temporary connection for this request
             async with self.connection_manager.connection_context() as (readstream, writestream, get_session_id):
                 self.readstream = readstream
                 self.writestream = writestream
-                
+
                 if not await self.connect_to_server():
                     return "Error: Failed to establish MCP connection."
-                
+
                 try:
-                    return await self._ask_single_question_with_session(question)
+                    return await self._ask_single_question_with_session(question, on_delta=on_delta)
                 finally:
                     # Clean up temporary session
                     if hasattr(self, '_exit_stack') and self._exit_stack:
@@ -560,47 +560,57 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                             self.session = None
                         except Exception as e:
                             logging.debug(f"Error closing temporary session: {e}")
-    
-    async def _ask_single_question_with_session(self, question: str) -> str:
+
+    async def _ask_single_question_with_session(self, question: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """Helper method that assumes session is already established."""
         # Get available tools
         tools = await self._get_available_tools()
 
         logging.info(f"Tools: {tools}")
-        
+
         response_content = ""
         current_input = question
-        
+
         while True:
-            # Call OpenAI responses API (non-streaming for single questions)
-            response = await self.openai.responses.create(
-                model=self.model,
-                max_output_tokens=self.max_tokens,
-                input=current_input,
-                instructions=self.system_prompt,
-                tools=tools or None
-            )
-            
-            # Extract text content from responses API
-            if hasattr(response, 'output') and response.output:
-                if hasattr(response.output, 'content'):
-                    response_content += response.output.content
-            
-            # Check for tool calls in responses API format
-            if not hasattr(response, 'tool_calls') or not response.tool_calls:
-                break
-            
-            # Execute tools
-            tool_calls_by_id = {tc.id: {
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-            } for tc in response.tool_calls}
-            
+            if on_delta:
+                # Streaming branch
+                text, tool_calls_by_id, _ = await self._stream_assistant(
+                    current_input, tools, on_delta=on_delta
+                )
+                response_content += text
+
+                if not tool_calls_by_id:
+                    break
+            else:
+                # Call OpenAI responses API (non-streaming for single questions)
+                response = await self.openai.responses.create(
+                    model=self.model,
+                    max_output_tokens=self.max_tokens,
+                    input=current_input,
+                    instructions=self.system_prompt,
+                    tools=tools or None
+                )
+
+                # Extract text content from responses API
+                if hasattr(response, 'output') and response.output:
+                    if hasattr(response.output, 'content'):
+                        response_content += response.output.content
+
+                # Check for tool calls in responses API format
+                if not hasattr(response, 'tool_calls') or not response.tool_calls:
+                    break
+
+                # Execute tools
+                tool_calls_by_id = {tc.id: {
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                } for tc in response.tool_calls}
+
             result_blocks = await self._execute_tool_calls(tool_calls_by_id)
-            
+
             # Add tool results to input for next iteration
             tool_results = "\n".join([f"Tool result: {result['content']}" for result in result_blocks])
             current_input = f"{current_input}\n{tool_results}"
-        
+
         return response_content.strip()
 
     async def ask_question(
@@ -647,51 +657,70 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
                 conversation_context = "\n".join([
                     f"{msg['role']}: {msg['content']}" for msg in self.messages[-10:]  # Last 10 messages
                 ])
-                
+
                 logging.info(f"Tools: {tools[0] if tools else 'No tools available'}")
-                
-                response = await self.openai.responses.create(
-                    model=self.model,
-                    max_output_tokens=self.max_tokens,
-                    input=conversation_context,
-                    instructions=self.system_prompt,
-                    tools=tools or None
-                )
-                
-                # Extract content from responses API
-                assistant_content = ""
-                if hasattr(response, 'output') and response.output:
-                    if hasattr(response.output, 'content'):
-                        assistant_content = response.output.content
-                        response_content += assistant_content
-                
-                self.messages.append({
-                    "role": "assistant", 
-                    "content": assistant_content
-                })
-                
-                # Save assistant response to memory
-                if use_memory:
-                    await self.memory_save_message("assistant", assistant_content)
-                
-                # Check for tool calls in responses API format
-                if not hasattr(response, 'tool_calls') or not response.tool_calls:
-                    break
-                
-                # Execute tools
-                tool_calls_by_id = {tc.id: {
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-                } for tc in response.tool_calls}
-                
+
+                if on_delta:
+                    # Streaming branch — reuse _stream_assistant()
+                    assistant_content, tool_calls_by_id, _ = await self._stream_assistant(
+                        conversation_context, tools, on_delta=on_delta
+                    )
+                    response_content += assistant_content
+
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": assistant_content
+                    })
+
+                    if use_memory:
+                        await self.memory_save_message("assistant", assistant_content)
+
+                    if not tool_calls_by_id:
+                        break
+                else:
+                    # Non-streaming branch
+                    response = await self.openai.responses.create(
+                        model=self.model,
+                        max_output_tokens=self.max_tokens,
+                        input=conversation_context,
+                        instructions=self.system_prompt,
+                        tools=tools or None
+                    )
+
+                    # Extract content from responses API
+                    assistant_content = ""
+                    if hasattr(response, 'output') and response.output:
+                        if hasattr(response.output, 'content'):
+                            assistant_content = response.output.content
+                            response_content += assistant_content
+
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": assistant_content
+                    })
+
+                    # Save assistant response to memory
+                    if use_memory:
+                        await self.memory_save_message("assistant", assistant_content)
+
+                    # Check for tool calls in responses API format
+                    if not hasattr(response, 'tool_calls') or not response.tool_calls:
+                        break
+
+                    # Execute tools
+                    tool_calls_by_id = {tc.id: {
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                    } for tc in response.tool_calls}
+
                 result_blocks = await self._execute_tool_calls(tool_calls_by_id)
-                
+
                 # Add tool results to conversation
                 for result in result_blocks:
                     self.messages.append({
                         "role": "user",
                         "content": f"Tool result: {result['content']}"
                     })
-                    
+
                     # Save tool results to memory
                     if use_memory:
                         await self.memory_save_message("user", result['content'], "tool_result")
@@ -700,15 +729,15 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             return response_content.strip()
         else:
             # Use single question method (no persistent history)
-            result = await self.ask_single_question(question)
-            
+            result = await self.ask_single_question(question, on_delta=on_delta)
+
             # Still save to memory if requested (for searchability)
             if use_memory:
                 await self.memory_save_message("user", question)
                 await self.memory_save_message("assistant", result)
-            
+
             return result
-    
+
     # Abstract method implementations
     async def initialize(self) -> None:
         """
@@ -930,7 +959,7 @@ class PersistentOpenAiClient(BasePersistentLLMClient, OpenAiClient):
             maintain_history: Whether to maintain conversation context (default: True)
             use_memory: Whether to use memory for context and persistence (default: True)
             auto_establish_connection: Whether to automatically establish MCP connection if needed (default: True)
-            on_delta: Optional callback invoked with each text chunk (not yet implemented for OpenAI).
+            on_delta: Optional callback invoked with each text chunk for streaming.
 
         Returns:
             The response as a string
