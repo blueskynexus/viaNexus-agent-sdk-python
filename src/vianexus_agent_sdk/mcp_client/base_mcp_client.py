@@ -4,7 +4,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from contextlib import AsyncExitStack
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from mcp import ClientSession
 
@@ -86,7 +86,7 @@ class BaseMCPClient(ABC):
                 logging.error("Chat loop error: %s", e)
 
     @abstractmethod
-    async def process_query(self, query: str) -> str:
+    async def process_query(self, query: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """Implement model/tool-specific query handling."""
         raise NotImplementedError
 

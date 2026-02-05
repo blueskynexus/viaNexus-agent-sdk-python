@@ -7,7 +7,7 @@ import logging
 import base64
 from contextlib import AsyncExitStack
 from openai import AsyncOpenAI
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 try:
     import jwt as jwt_lib
 except ImportError:
@@ -348,7 +348,7 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             logging.error("Error listing tools: %s", e)
             return []
 
-    async def _stream_assistant(self, input_text, tools, timeout=60):
+    async def _stream_assistant(self, input_text, tools, timeout=60, on_delta=None):
         """Stream assistant response with tool call handling using responses API"""
         text_out = []
         pending = {}
@@ -369,7 +369,10 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             if hasattr(event, 'type'):
                 if event.type == 'response.text.delta':
                     if hasattr(event, 'delta') and event.delta:
-                        print(event.delta, end="", flush=True)
+                        if on_delta:
+                            on_delta(event.delta)
+                        else:
+                            print(event.delta, end="", flush=True)
                         text_out.append(event.delta)
                 elif event.type == 'response.tool_calls.delta':
                     # Handle tool call deltas from responses API
@@ -461,7 +464,7 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         
         return result_blocks
 
-    async def process_query(self, query: str) -> str:
+    async def process_query(self, query: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """
         Process query with streaming output (implements abstract method).
         Maintains conversation history like Anthropic client.
@@ -479,13 +482,14 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
             ])
             current_input = conversation_context
 
-            text, tool_calls, assistant_msg = await self._stream_assistant(current_input, tools)
-            
+            text, tool_calls, assistant_msg = await self._stream_assistant(current_input, tools, on_delta=on_delta)
+
             # Store assistant message in conversation history
             self.messages.append({"role": "assistant", "content": text})
 
             if not tool_calls:
-                print()
+                if not on_delta:
+                    print()
                 self._trim_history()
                 return ""
 
@@ -600,11 +604,12 @@ class OpenAiClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
         return response_content.strip()
 
     async def ask_question(
-        self, 
-        question: str, 
+        self,
+        question: str,
         maintain_history: bool = False,
         use_memory: bool = False,
-        load_from_memory: bool = True
+        load_from_memory: bool = True,
+        on_delta: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Ask a question with optional conversation history and memory integration.
@@ -910,21 +915,23 @@ class PersistentOpenAiClient(BasePersistentLLMClient, OpenAiClient):
         return is_active
     
     async def ask_with_persistent_session(
-        self, 
-        question: str, 
+        self,
+        question: str,
         maintain_history: bool = False,
         use_memory: bool = False,
-        auto_establish_connection: bool = True
+        auto_establish_connection: bool = True,
+        on_delta: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Ask a question using the persistent MCP connection with integrated memory.
-        
+
         Args:
             question: The question to ask
             maintain_history: Whether to maintain conversation context (default: True)
             use_memory: Whether to use memory for context and persistence (default: True)
             auto_establish_connection: Whether to automatically establish MCP connection if needed (default: True)
-        
+            on_delta: Optional callback invoked with each text chunk (not yet implemented for OpenAI).
+
         Returns:
             The response as a string
         """
@@ -938,20 +945,21 @@ class PersistentOpenAiClient(BasePersistentLLMClient, OpenAiClient):
                 except Exception as e:
                     logging.error(f"Failed to establish MCP connection: {e}")
                     raise RuntimeError(f"Could not establish persistent MCP connection: {e}")
-        
+
         if not self.is_connected:
             raise RuntimeError("No persistent MCP connection available. Call establish_persistent_connection() first or set auto_establish_connection=True")
-        
+
         if not self.session:
             raise RuntimeError("MCP session not initialized")
-        
+
         # Use the ask_question method which integrates with memory system
         logging.info(f"Asking question: {question}")
         return await self.ask_question(
             question=question,
             maintain_history=maintain_history,
             use_memory=use_memory,
-            load_from_memory=use_memory
+            load_from_memory=use_memory,
+            on_delta=on_delta
         )
     
     async def cleanup(self) -> None:

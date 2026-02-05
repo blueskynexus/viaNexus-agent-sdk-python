@@ -6,7 +6,7 @@ import json
 import re
 import ast
 from contextlib import AsyncExitStack
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import jwt as jwt_lib
@@ -350,16 +350,16 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """Clear the captured artifacts list."""
         self._last_artifacts = []
     
-    async def process_query(self, query: str) -> str:
+    async def process_query(self, query: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """
         Process query with streaming output (implements abstract method).
         """
         if not self.session:
             return "Error: MCP session not initialized."
-        
+
         # Clear artifacts from previous conversation turn
         self.clear_artifacts()
-        
+
         tools = await self._get_available_tools()
         self.messages.append({"role": "user", "content": query})
 
@@ -368,7 +368,10 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             iteration += 1
             if iteration > MAX_TOOL_ITERATIONS:
                 logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in process_query, breaking loop")
-                print("\n[Max tool iterations reached]")
+                if on_delta:
+                    on_delta("\n[Max tool iterations reached]")
+                else:
+                    print("\n[Max tool iterations reached]")
                 self._trim_history()
                 return ""
 
@@ -381,7 +384,10 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             ) as stream:
                 async for event in stream:
                     if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
-                        print(event.delta.text, end="", flush=True)
+                        if on_delta:
+                            on_delta(event.delta.text)
+                        else:
+                            print(event.delta.text, end="", flush=True)
 
                 msg = await stream.get_final_message()
 
@@ -390,7 +396,8 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             self.messages.append({"role": "assistant", "content": content_blocks})
 
             if not tool_uses:
-                print()
+                if not on_delta:
+                    print()
                 self._trim_history()
                 return ""
 
@@ -423,7 +430,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             args = tub.input if isinstance(tub.input, dict) else {}
 
             try:
-                logging.info(f"Calling tool: {name}")
+                logging.debug(f"Calling tool: {name}")
                 logging.debug(f"Tool args: {json.dumps(args, indent=2, default=str)}")
                 result = await self.session.call_tool(name, args)
                 payload = result.content
@@ -731,11 +738,12 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         return response_content.strip()
     
     async def ask_question(
-        self, 
-        question: str, 
+        self,
+        question: str,
         maintain_history: bool = False,
         use_memory: bool = False,
-        load_from_memory: bool = True
+        load_from_memory: bool = True,
+        on_delta: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Ask a question with optional conversation history and memory integration.
@@ -782,13 +790,26 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in ask_question, breaking loop")
                     break
 
-                response = await self.anthropic.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    messages=self.messages,
-                    tools=tools or None,
-                    system=self.system_prompt
-                )
+                if on_delta:
+                    async with self.anthropic.messages.stream(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        messages=self.messages,
+                        tools=tools or None,
+                        system=self.system_prompt
+                    ) as stream:
+                        async for event in stream:
+                            if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                                on_delta(event.delta.text)
+                        response = await stream.get_final_message()
+                else:
+                    response = await self.anthropic.messages.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        messages=self.messages,
+                        tools=tools or None,
+                        system=self.system_prompt
+                    )
 
                 # Extract text content
                 content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
@@ -1033,21 +1054,23 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
         return is_active
     
     async def ask_with_persistent_session(
-        self, 
-        question: str, 
+        self,
+        question: str,
         maintain_history: bool = False,
         use_memory: bool = False,
-        auto_establish_connection: bool = True
+        auto_establish_connection: bool = True,
+        on_delta: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Ask a question using the persistent MCP connection with integrated memory.
-        
+
         Args:
             question: The question to ask
             maintain_history: Whether to maintain conversation context (default: True)
             use_memory: Whether to use memory for context and persistence (default: True)
             auto_establish_connection: Whether to automatically establish MCP connection if needed (default: True)
-        
+            on_delta: Optional callback invoked with each text chunk as it arrives for streaming.
+
         Returns:
             The response as a string
         """
@@ -1060,21 +1083,22 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
                 except Exception as e:
                     logging.error(f"Failed to establish MCP connection: {e}")
                     raise RuntimeError(f"Could not establish persistent MCP connection: {e}")
-        
+
         if not self.is_connected:
             raise RuntimeError("No persistent MCP connection available. Call establish_persistent_connection() first or set auto_establish_connection=True")
-        
+
         if not self.session:
             raise RuntimeError("MCP session not initialized")
-        
+
         # Use the ask_question method which integrates with memory system
         return await self.ask_question(
             question=question,
             maintain_history=maintain_history,
             use_memory=use_memory,
-            load_from_memory=use_memory
+            load_from_memory=use_memory,
+            on_delta=on_delta
         )
-    
+
     async def cleanup(self) -> None:
         """Clean up both persistent and base class resources."""
         await self.close_persistent_connection()

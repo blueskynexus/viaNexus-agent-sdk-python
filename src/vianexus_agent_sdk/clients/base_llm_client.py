@@ -3,7 +3,7 @@ Abstract base class defining the unified LLM client interface.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Callable, Optional, Dict, Any
 from vianexus_agent_sdk.memory import BaseMemoryStore
 import logging
 
@@ -141,7 +141,8 @@ class BaseLLMClient(ABC):
         question: str,
         maintain_history: bool = False,
         use_memory: bool = True,
-        load_from_memory: bool = True
+        load_from_memory: bool = True,
+        on_delta: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Ask a question with optional conversation history and memory integration.
@@ -158,13 +159,16 @@ class BaseLLMClient(ABC):
         pass
     
     @abstractmethod
-    async def process_query(self, query: str) -> str:
+    async def process_query(self, query: str, on_delta: Optional[Callable[[str], None]] = None) -> str:
         """
         Process query with streaming output and conversation history.
-        
+
         Args:
             query: The query to process
-            
+            on_delta: Optional callback invoked with each text chunk as it arrives.
+                      When provided, chunks are passed to this callback instead of
+                      being printed to stdout.
+
         Returns:
             Empty string (output is streamed to console)
         """
@@ -224,7 +228,8 @@ class BasePersistentLLMClient(BaseLLMClient):
         question: str,
         maintain_history: bool = True,
         use_memory: bool = True,
-        auto_establish_connection: bool = True
+        auto_establish_connection: bool = True,
+        on_delta: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         Ask a question using the persistent MCP connection with integrated memory.
