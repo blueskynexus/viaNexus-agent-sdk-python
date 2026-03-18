@@ -405,11 +405,15 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         try:
             tool_list = await self.session.list_tools()
-            return [{
+            tools = [{
                 "name": t.name,
                 "description": t.description or "",
                 "input_schema": getattr(t, "inputSchema", {}) or {},
             } for t in (tool_list.tools or [])]
+            # #region agent log
+            logging.info(f"Available tools: {[t['name'] for t in tools]}")
+            # #endregion
+            return tools
         except Exception as e:
             logging.error("Error listing tools: %s", e)
             return []
@@ -691,7 +695,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """Helper method that assumes session is already established."""
         # Get available tools
         tools = await self._get_available_tools()
-
+        logging.info(f"Available tools: {[t['name'] for t in tools]}")
         # Create temporary message list for this single question
         temp_messages = [{"role": "user", "content": question}]
         response_content = ""
@@ -704,6 +708,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 break
 
             # Call Anthropic API
+            logging.info(f"System prompt (first 200 chars): {self.system_prompt[:200] if self.system_prompt else '(none)'}")
             response = await self.anthropic.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
@@ -773,6 +778,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             self.messages.append({"role": "user", "content": question})
 
             tools = await self._get_available_tools()
+            logging.info(f"Available tools: {[t['name'] for t in tools]}")
             response_content = ""
 
             iteration = 0
@@ -782,6 +788,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in ask_question, breaking loop")
                     break
 
+                logging.info(f"System prompt (first 200 chars): {self.system_prompt[:200] if self.system_prompt else '(none)'}")
                 response = await self.anthropic.messages.create(
                     model=self.model,
                     max_tokens=self.max_tokens,
@@ -845,6 +852,11 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 await self._exit_stack.aclose()
             except Exception as e:
                 logging.error(f"Error closing session: {e}")
+    
+    @property
+    def last_artifacts(self):
+        """Artifacts captured from tool results (JSON with artifact_type) this turn."""
+        return getattr(self, "_last_artifacts", [])
     
     # provider_name, model_name and system_prompt are already implemented via memory mixin, base class and instance attribute
 
