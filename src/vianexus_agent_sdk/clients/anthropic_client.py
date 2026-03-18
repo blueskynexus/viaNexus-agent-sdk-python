@@ -369,11 +369,15 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         try:
             tool_list = await self.session.list_tools()
-            return [{
+            tools = [{
                 "name": t.name,
                 "description": t.description or "",
                 "input_schema": getattr(t, "inputSchema", {}) or {},
             } for t in (tool_list.tools or [])]
+            # #region agent log
+            logging.info(f"Available tools: {[t['name'] for t in tools]}")
+            # #endregion
+            return tools
         except Exception as e:
             logging.error("Error listing tools: %s", e)
             return []
@@ -404,6 +408,15 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     text_payload = payload.get('text', payload.get('content', str(payload)))
                 else:
                     text_payload = str(payload)
+                
+                try:
+                    parsed = json.loads(text_payload)
+                    if isinstance(parsed, dict) and "artifact_type" in parsed:
+                        if not hasattr(self, "_last_artifacts"):
+                            self._last_artifacts = []
+                        self._last_artifacts.append(parsed)
+                except (json.JSONDecodeError, TypeError):
+                    pass
                 
                 result_blocks.append({
                     "type": "tool_result",
@@ -641,6 +654,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """Helper method that assumes session is already established."""
         # Get available tools
         tools = await self._get_available_tools()
+        logging.info(f"Available tools: {[t['name'] for t in tools]}")
         
         # Create temporary message list for this single question
         temp_messages = [{"role": "user", "content": question}]
@@ -648,6 +662,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         while True:
             # Call Anthropic API
+            logging.info(f"System prompt (first 200 chars): {self.system_prompt[:200] if self.system_prompt else '(none)'}")
             response = await self.anthropic.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
@@ -698,6 +713,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """
         # Validate input
         question = self._validate_question(question)
+        self._last_artifacts = []
         # Load conversation history from memory if requested
         if use_memory and maintain_history and load_from_memory:
             memory_messages = await self.memory_load_history()
@@ -715,9 +731,11 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             self.messages.append({"role": "user", "content": question})
             
             tools = await self._get_available_tools()
+            logging.info(f"Available tools: {[t['name'] for t in tools]}")
             response_content = ""
             
             while True:
+                logging.info(f"System prompt (first 200 chars): {self.system_prompt[:200] if self.system_prompt else '(none)'}")
                 response = await self.anthropic.messages.create(
                     model=self.model,
                     max_tokens=self.max_tokens,
@@ -781,6 +799,11 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 await self._exit_stack.aclose()
             except Exception as e:
                 logging.error(f"Error closing session: {e}")
+    
+    @property
+    def last_artifacts(self):
+        """Artifacts captured from tool results (JSON with artifact_type) this turn."""
+        return getattr(self, "_last_artifacts", [])
     
     # provider_name, model_name and system_prompt are already implemented via memory mixin, base class and instance attribute
 
