@@ -853,11 +853,6 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             except Exception as e:
                 logging.error(f"Error closing session: {e}")
     
-    @property
-    def last_artifacts(self):
-        """Artifacts captured from tool results (JSON with artifact_type) this turn."""
-        return getattr(self, "_last_artifacts", [])
-    
     # provider_name, model_name and system_prompt are already implemented via memory mixin, base class and instance attribute
 
 
