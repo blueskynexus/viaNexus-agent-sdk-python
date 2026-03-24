@@ -449,7 +449,12 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     if isinstance(parsed_result, dict) and "artifact_type" in parsed_result:
                         # Capture as artifact for OpenBB/external clients
                         self._last_artifacts.append(parsed_result)
-                        logging.info(f"Captured artifact from tool '{name}': {parsed_result.get('artifact_type')}")
+                        artifact_type = parsed_result.get('artifact_type')
+                        artifact_name = parsed_result.get('name', 'untitled')
+                        logging.info(f"Captured artifact from tool '{name}': {artifact_type}")
+                        # Replace raw payload with short confirmation so the LLM
+                        # knows the artifact was created and stops retrying.
+                        text_payload = f"Success: {artifact_type} artifact created — \"{artifact_name}\". The artifact has been captured and will be rendered by the client."
                 except (json.JSONDecodeError, TypeError):
                     pass  # Not JSON or not parseable, treat as regular text
 
