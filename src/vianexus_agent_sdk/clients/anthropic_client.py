@@ -910,8 +910,8 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
     
     async def _verify_connection_health(self) -> bool:
         """Verify that the persistent connection is still healthy."""
-        if not self._connection_active or not self._mcp_session_id:
-            logging.debug("Connection not active or no MCP session ID")
+        if not self._connection_active:
+            logging.debug("Connection not active")
             return False
         
         if not self.session:
@@ -960,21 +960,14 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
             if not await self.connect_to_server():
                 raise RuntimeError("Failed to initialize MCP session")
             
-            # Get the session ID from the connection
-            try:
-                mcp_session_id = get_session_id() if get_session_id else None
-                if not mcp_session_id:
-                    raise RuntimeError("Failed to get MCP session ID")
-                
-                self._mcp_session_id = str(mcp_session_id)
-                self._connection_active = True
-                logging.info(f"Established persistent MCP connection: {self._mcp_session_id}")
-                
-                return self._mcp_session_id
-                
-            except Exception as e:
-                raise RuntimeError(f"Failed to get MCP session ID: {e}")
-                
+            # Session id from the server when it issues one, our own handle when it
+            # does not -- a stateless server never sends the header.
+            self._mcp_session_id = self._resolve_mcp_session_id(get_session_id)
+            self._connection_active = True
+            logging.info(f"Established persistent MCP connection: {self._mcp_session_id}")
+
+            return self._mcp_session_id
+
         except Exception as e:
             logging.error(f"Error establishing persistent MCP connection: {e}")
             await self.close_persistent_connection()
@@ -1028,7 +1021,7 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
     @property
     def is_connected(self) -> bool:
         """Check if the persistent connection is active."""
-        is_active = self._connection_active and self._mcp_session_id is not None
+        is_active = self._connection_active and self.session is not None
         logging.debug(f"Connection status check: active={self._connection_active}, mcp_session_id={self._mcp_session_id}, result={is_active}")
         return is_active
     
