@@ -3,7 +3,8 @@ Abstract base class defining the unified LLM client interface.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Callable, Optional, Dict, Any
+from uuid import uuid4
 from vianexus_agent_sdk.memory import BaseMemoryStore
 import logging
 
@@ -202,7 +203,27 @@ class BasePersistentLLMClient(BaseLLMClient):
     """
     Abstract base class for persistent LLM clients that maintain long-running connections.
     """
-    
+
+    def _resolve_mcp_session_id(self, get_session_id: Optional[Callable[[], Optional[str]]]) -> str:
+        """Prefer the server's Mcp-Session-Id, else mint a stable local handle.
+
+        A stateless MCP server issues no session id at all, and the 2026-07-28 spec
+        revision retires the header outright. Requiring it was never necessary: this id
+        is only ever a local conversation handle -- it is never sent back to the server,
+        which owns the header itself -- so when the server offers none we can mint our
+        own.
+
+        The local handle is minted once per client, so it survives re-establishing a
+        dropped connection. A server-issued id does not, which is why a caller's stored
+        id could silently stop matching after the server restarted.
+        """
+        server_id = get_session_id() if get_session_id else None
+        if server_id:
+            return str(server_id)
+        if not getattr(self, "_local_session_id", None):
+            self._local_session_id = f"local-{uuid4()}"
+        return self._local_session_id
+
     @abstractmethod
     async def establish_persistent_connection(self) -> str:
         """
