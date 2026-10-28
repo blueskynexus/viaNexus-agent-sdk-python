@@ -312,7 +312,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         # Anthropic-specific configuration
         self.anthropic = AsyncAnthropic(api_key=config.get("LLM_API_KEY"))
         self.model = config.get("LLM_MODEL", "claude-sonnet-5-5")
-        self.max_tokens = config.get("max_tokens", 1000)
+        self.max_tokens = config.get("max_tokens", 16000)  # adaptive thinking counts toward it
         self.effort = config.get("effort")  # output_config.effort: low|medium|high|xhigh|max
         self.messages = []  # Local message cache
         self._tools_cache = None  # MCP tools, cached per connection
@@ -388,6 +388,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                         print(event.delta.text, end="", flush=True)
 
                 msg = await stream.get_final_message()
+            self._warn_if_truncated(msg)
 
             content_blocks, _ = self._process_content_blocks_for_tool_use(msg.content)
             tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
@@ -532,6 +533,12 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         return anthropic_messages
     
+    def _warn_if_truncated(self, response) -> None:
+        """Log replies cut off at max_tokens: thinking counts toward it, so a low limit can
+        leave the reply (or a tool call) truncated or empty."""
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            logging.warning(f"Response hit max_tokens ({self.max_tokens}); the reply or tool call may be truncated")
+
     def _trim_history(self):
         """Keep conversation history within reasonable bounds."""
         if len(self.messages) > self.max_history_length:
@@ -750,6 +757,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 tools=tools or None,
                 system=self.system_prompt
             )
+            self._warn_if_truncated(response)
 
             # Extract text content
             content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
@@ -808,6 +816,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                     if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
                         yield event.delta.text
                 response = await stream.get_final_message()
+            self._warn_if_truncated(response)
 
             content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
             if getattr(response, "stop_reason", None) == "refusal" and not block_response_content:

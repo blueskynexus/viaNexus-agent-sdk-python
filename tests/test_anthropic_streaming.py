@@ -126,6 +126,28 @@ def test_effort_thinking_and_refusal():
     assert client.messages[-1]["content"] == [{"type": "text", "text": REFUSAL_MESSAGE}]
 
 
+def test_truncation_is_logged():
+    import logging
+    client = make_client([[TextBlock(type="text", text="cut")]])
+    stream = client.anthropic.messages.stream
+
+    def truncated(**kw):
+        s = stream(**kw)
+        s.get_final_message = lambda: asyncio.sleep(0, SimpleNamespace(content=s.blocks, stop_reason="max_tokens"))
+        return s
+
+    client.anthropic.messages.stream = truncated
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    logging.getLogger().addHandler(handler)
+    try:
+        asyncio.run(client.ask_question("hi", maintain_history=True))
+    finally:
+        logging.getLogger().removeHandler(handler)
+    assert any("max_tokens (4096)" in r.getMessage() for r in records), records
+
+
 def test_ask_question_returns_the_streamed_text():
     client = make_client([[TextBlock(type="text", text=" hello ")]])
     assert asyncio.run(client.ask_question("hi", maintain_history=True)) == "hello"

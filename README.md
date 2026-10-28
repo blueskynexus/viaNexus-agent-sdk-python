@@ -813,7 +813,7 @@ config = {
     },
     
     # Optional: Behavior Configuration
-    "max_tokens": 2000,                    # Response length limit (default: 1000)
+    "max_tokens": 2000,                    # Response length limit (default: 16000 Anthropic, thinking included; 1000 others)
     "max_history_length": 50,              # Conversation history limit (default: 50)
     "system_prompt": "Custom prompt...",   # Override default prompt
     "user_id": "unique_user_id",           # For session isolation
