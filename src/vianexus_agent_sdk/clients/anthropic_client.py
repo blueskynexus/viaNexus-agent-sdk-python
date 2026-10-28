@@ -6,7 +6,7 @@ import json
 import re
 import ast
 from contextlib import AsyncExitStack
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Union
 
 try:
     import jwt as jwt_lib
@@ -781,12 +781,16 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         self,
         question: str,
         use_memory: bool = False,
-        load_from_memory: bool = True
-    ) -> AsyncIterator[str]:
+        load_from_memory: bool = True,
+        yield_tool_calls: bool = False
+    ) -> AsyncIterator[Union[str, ToolUseBlock]]:
         """
         Ask a question in the ongoing conversation, yielding text deltas as the model
         produces them (across every tool-use iteration). The final processed text is
         left in self._last_response.
+
+        With yield_tool_calls, each tool-use block is also yielded just before the tool
+        runs, so callers can show what the agent is doing.
         """
         question = self._validate_question(question)
         self.clear_artifacts()
@@ -838,6 +842,9 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
             if not tool_uses:
                 break
 
+            if yield_tool_calls:
+                for tool_use in tool_uses:
+                    yield tool_use
             result_blocks = await self._execute_tool_calls(tool_uses)
             self.messages.append({"role": "user", "content": result_blocks})
             if use_memory:
@@ -1120,12 +1127,16 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
         self,
         question: str,
         use_memory: bool = False,
-        auto_establish_connection: bool = True
-    ) -> AsyncIterator[str]:
+        auto_establish_connection: bool = True,
+        yield_tool_calls: bool = False
+    ) -> AsyncIterator[Union[str, ToolUseBlock]]:
         """Streaming ask_with_persistent_session (history always maintained). Yields text
-        deltas; the full processed response is in self._last_response afterwards."""
+        deltas (and tool-use blocks with yield_tool_calls, see ask_question_stream); the
+        full processed response is in self._last_response afterwards."""
         await self._ensure_persistent_session(auto_establish_connection)
-        async for delta in self.ask_question_stream(question, use_memory=use_memory, load_from_memory=use_memory):
+        async for delta in self.ask_question_stream(
+            question, use_memory=use_memory, load_from_memory=use_memory, yield_tool_calls=yield_tool_calls
+        ):
             yield delta
 
     async def _ensure_persistent_session(self, auto_establish_connection: bool) -> None:

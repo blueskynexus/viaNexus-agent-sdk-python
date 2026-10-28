@@ -90,6 +90,30 @@ def test_stream_runs_the_tool_loop_and_yields_every_delta():
     assert client.list_calls == 1
 
 
+def test_tool_calls_are_yielded_before_they_run_when_asked():
+    client = make_client([
+        [ToolUseBlock(type="tool_use", id="t1", name="search", input={"q": "x"})],
+        [TextBlock(type="text", text="Done.")],
+    ])
+    calls = []
+    call_tool = client.session.call_tool
+
+    async def recording_call_tool(name, args):
+        calls.append(name)
+        return await call_tool(name, args)
+
+    client.session.call_tool = recording_call_tool
+
+    async def run():
+        out = []
+        async for d in client.ask_question_stream("q", yield_tool_calls=True):
+            out.append((d, list(calls)))
+        return out
+
+    (tool_use, calls_then), (text, _) = asyncio.run(run())
+    assert (tool_use.name, tool_use.input, calls_then) == ("search", {"q": "x"}, [])
+    assert text == "Done." and client._last_response == "Done."
+
 def test_effort_thinking_and_refusal():
     from anthropic.types import ThinkingBlock
 
