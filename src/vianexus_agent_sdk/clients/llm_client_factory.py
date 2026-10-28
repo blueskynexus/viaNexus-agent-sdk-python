@@ -43,7 +43,7 @@ class LLMClientFactory:
     # Explicit provider specification
     config = {
         "provider": "anthropic",
-        "LLM_MODEL": "claude-3-5-sonnet-20241022",
+        "LLM_MODEL": "claude-sonnet-5-5",
         "LLM_API_KEY": "sk-ant-...",
         "agentServers": {"viaNexus": {...}}
     }

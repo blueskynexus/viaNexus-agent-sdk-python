@@ -9,8 +9,8 @@ class BaseConfig(TypedDict):
 class AnthropicConfig(BaseConfig):
     """Configuration specific to Anthropic client"""
     llm_api_key: str
-    llm_model: Optional[str] = "claude-3-5-sonnet-20241022"
-    max_tokens: Optional[int] = 1000
+    llm_model: Optional[str] = "claude-sonnet-5-5"
+    max_tokens: Optional[int] = 16000
 
 class OpenAiConfig(BaseConfig):
     """Configuration specific to OpenAI client"""

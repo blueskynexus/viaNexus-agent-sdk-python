@@ -6,7 +6,7 @@ import json
 import re
 import ast
 from contextlib import AsyncExitStack
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 try:
     import jwt as jwt_lib
@@ -25,6 +25,7 @@ DEFAULT_FINANCIAL_SYSTEM_PROMPT = """You are a skilled Financial Analyst. You wi
 
 # Maximum number of tool call iterations to prevent infinite loops
 MAX_TOOL_ITERATIONS = 15
+REFUSAL_MESSAGE = "Sorry, I can't help with that request."
 
 
 class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin):
@@ -310,9 +311,12 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         # Anthropic-specific configuration
         self.anthropic = AsyncAnthropic(api_key=config.get("LLM_API_KEY"))
-        self.model = config.get("LLM_MODEL", "claude-sonnet-4-20250514")
-        self.max_tokens = config.get("max_tokens", 1000)
+        self.model = config.get("LLM_MODEL", "claude-sonnet-5-5")
+        self.max_tokens = config.get("max_tokens", 16000)  # adaptive thinking counts toward it
+        self.effort = config.get("effort")  # output_config.effort: low|medium|high|xhigh|max
         self.messages = []  # Local message cache
+        self._tools_cache = None  # MCP tools, cached per connection
+        self._last_response = ""
         self._last_artifacts = []  # Captured artifacts from tool calls (charts, tables, etc.)
         self.max_history_length = config.get("max_history_length", 50)
 
@@ -384,6 +388,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                         print(event.delta.text, end="", flush=True)
 
                 msg = await stream.get_final_message()
+            self._warn_if_truncated(msg)
 
             content_blocks, _ = self._process_content_blocks_for_tool_use(msg.content)
             tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
@@ -402,17 +407,52 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         """Get list of available MCP tools."""
         if not self.session:
             return []
-        
+        # Tools are fixed for the life of an MCP connection; the cache is dropped
+        # when the persistent connection closes.
+        if self._tools_cache:
+            return self._tools_cache
+
         try:
             tool_list = await self.session.list_tools()
-            return [{
-                "name": t.name,
-                "description": t.description or "",
-                "input_schema": getattr(t, "inputSchema", {}) or {},
-            } for t in (tool_list.tools or [])]
+            self._tools_cache = self._format_tools(tool_list)
+            return self._tools_cache
         except Exception as e:
             logging.error("Error listing tools: %s", e)
             return []
+
+    @staticmethod
+    def _format_tools(tool_list) -> list:
+        return [{
+            "name": t.name,
+            "description": t.description or "",
+            "input_schema": getattr(t, "inputSchema", {}) or {},
+        } for t in (tool_list.tools or [])]
+
+    def _build_request(self, tools: list) -> dict:
+        """Messages API kwargs with prompt-cache breakpoints on tools, system and the
+        conversation tail, so each turn and tool iteration re-reads the prefix from cache.
+        Copies rather than mutating self.messages."""
+        cache = {"type": "ephemeral"}
+        request = {"model": self.model, "max_tokens": self.max_tokens}
+        if self.effort:
+            # extra_body: the pinned anthropic SDK predates the output_config kwarg.
+            request["extra_body"] = {"output_config": {"effort": self.effort}}
+
+        if tools:
+            request["tools"] = tools[:-1] + [{**tools[-1], "cache_control": cache}]
+        if self.system_prompt:
+            request["system"] = [{"type": "text", "text": self.system_prompt, "cache_control": cache}]
+
+        messages = list(self.messages)
+        if messages:
+            last = messages[-1]
+            content = last.get("content")
+            if isinstance(content, str) and content:
+                messages[-1] = {**last, "content": [{"type": "text", "text": content, "cache_control": cache}]}
+            elif isinstance(content, list) and content and isinstance(content[-1], dict):
+                messages[-1] = {**last, "content": content[:-1] + [{**content[-1], "cache_control": cache}]}
+        request["messages"] = messages
+        return request
     
     async def _execute_tool_calls(self, tool_uses: list) -> list:
         """Execute MCP tool calls and return results."""
@@ -493,6 +533,12 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         
         return anthropic_messages
     
+    def _warn_if_truncated(self, response) -> None:
+        """Log replies cut off at max_tokens: thinking counts toward it, so a low limit can
+        leave the reply (or a tool call) truncated or empty."""
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            logging.warning(f"Response hit max_tokens ({self.max_tokens}); the reply or tool call may be truncated")
+
     def _trim_history(self):
         """Keep conversation history within reasonable bounds."""
         if len(self.messages) > self.max_history_length:
@@ -711,6 +757,7 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
                 tools=tools or None,
                 system=self.system_prompt
             )
+            self._warn_if_truncated(response)
 
             # Extract text content
             content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
@@ -730,8 +777,77 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
 
         return response_content.strip()
     
+    async def ask_question_stream(
+        self,
+        question: str,
+        use_memory: bool = False,
+        load_from_memory: bool = True
+    ) -> AsyncIterator[str]:
+        """
+        Ask a question in the ongoing conversation, yielding text deltas as the model
+        produces them (across every tool-use iteration). The final processed text is
+        left in self._last_response.
+        """
+        question = self._validate_question(question)
+        self.clear_artifacts()
+        self._last_response = ""
+        if use_memory and load_from_memory:
+            memory_messages = await self.memory_load_history()
+            if memory_messages:
+                self.messages = self._convert_memory_to_anthropic_messages(memory_messages)
+                logging.debug(f"Loaded {len(memory_messages)} messages from memory")
+
+        if use_memory:
+            await self.memory_save_message("user", question)
+
+        self.messages.append({"role": "user", "content": question})
+        tools = await self._get_available_tools()
+        response_content = ""
+
+        iteration = 0
+        while True:
+            iteration += 1
+            if iteration > MAX_TOOL_ITERATIONS:
+                logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in ask_question, breaking loop")
+                break
+
+            async with self.anthropic.messages.stream(**self._build_request(tools)) as stream:
+                async for event in stream:
+                    if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                        yield event.delta.text
+                response = await stream.get_final_message()
+            self._warn_if_truncated(response)
+
+            content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
+            if getattr(response, "stop_reason", None) == "refusal" and not block_response_content:
+                # A safeguard decline can arrive with no text; never leave the user (or history) empty.
+                content_blocks = [{"type": "text", "text": REFUSAL_MESSAGE}]
+                block_response_content = REFUSAL_MESSAGE
+                yield REFUSAL_MESSAGE
+            response_content += block_response_content
+            # Thinking blocks go back to the API unchanged within this turn; memory
+            # stringifies history, so keep their (large) signatures out of it.
+            self.messages.append({"role": "assistant", "content": content_blocks})
+            if use_memory:
+                await self.memory_save_message(
+                    "assistant",
+                    [b for b in content_blocks if getattr(b, "type", None) not in ("thinking", "redacted_thinking")],
+                )
+
+            tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
+            if not tool_uses:
+                break
+
+            result_blocks = await self._execute_tool_calls(tool_uses)
+            self.messages.append({"role": "user", "content": result_blocks})
+            if use_memory:
+                await self.memory_save_message("user", result_blocks, "tool_result")
+
+        self._trim_history()
+        self._last_response = response_content.strip()
+
     async def ask_question(
-        self, 
+        self,
         question: str, 
         maintain_history: bool = False,
         use_memory: bool = False,
@@ -752,71 +868,16 @@ class AnthropicClient(BaseLLMClient, EnhancedMCPClient, ConversationMemoryMixin)
         Raises:
             ValueError: If question is invalid
         """
-        # Validate input
-        question = self._validate_question(question)
-        # Clear artifacts from previous conversation turn
-        self.clear_artifacts()
-        # Load conversation history from memory if requested
-        if use_memory and maintain_history and load_from_memory:
-            memory_messages = await self.memory_load_history()
-            if memory_messages:
-                # Convert memory messages to Anthropic format
-                self.messages = self._convert_memory_to_anthropic_messages(memory_messages)
-                logging.debug(f"Loaded {len(memory_messages)} messages from memory")
-        
-        # Save user question to memory
-        if use_memory:
-            await self.memory_save_message("user", question)
-        
         if maintain_history:
-            # Add to ongoing conversation
-            self.messages.append({"role": "user", "content": question})
-
-            tools = await self._get_available_tools()
-            response_content = ""
-
-            iteration = 0
-            while True:
-                iteration += 1
-                if iteration > MAX_TOOL_ITERATIONS:
-                    logging.warning(f"Max tool iterations ({MAX_TOOL_ITERATIONS}) reached in ask_question, breaking loop")
-                    break
-
-                response = await self.anthropic.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    messages=self.messages,
-                    tools=tools or None,
-                    system=self.system_prompt
-                )
-
-                # Extract text content
-                content_blocks, block_response_content = self._process_content_blocks_for_tool_use(response.content)
-                response_content += block_response_content
-
-                self.messages.append({"role": "assistant", "content": content_blocks})
-
-                # Save assistant response to memory
-                if use_memory:
-                    await self.memory_save_message("assistant", content_blocks)
-
-                # Check for tool uses
-                tool_uses = [b for b in content_blocks if getattr(b, "type", None) == "tool_use"]
-
-                if not tool_uses:
-                    break
-
-                # Execute tools
-                result_blocks = await self._execute_tool_calls(tool_uses)
-                self.messages.append({"role": "user", "content": result_blocks})
-
-                # Save tool results to memory
-                if use_memory:
-                    await self.memory_save_message("user", result_blocks, "tool_result")
-
-            self._trim_history()
-            return response_content.strip()
+            async for _ in self.ask_question_stream(question, use_memory=use_memory, load_from_memory=load_from_memory):
+                pass
+            return self._last_response
         else:
+            question = self._validate_question(question)
+            self.clear_artifacts()
+            if use_memory:
+                await self.memory_save_message("user", question)
+
             # Use single question method (no persistent history)
             result = await self.ask_single_question(question)
             
@@ -919,8 +980,8 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
             return False
         
         try:
-            # Try to list tools as a health check
-            await self.session.list_tools()
+            # Try to list tools as a health check; the result refreshes the tool cache
+            self._tools_cache = self._format_tools(await self.session.list_tools())
             logging.debug("Connection health check passed")
             return True
         except Exception as e:
@@ -998,6 +1059,7 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
             self._connection_active = False
             self._mcp_session_id = None
             self._connection_context = None
+            self._tools_cache = None
             self._connection_task_group = None
             self._connection_task = None
             
@@ -1044,6 +1106,29 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
         Returns:
             The response as a string
         """
+        await self._ensure_persistent_session(auto_establish_connection)
+
+        # Use the ask_question method which integrates with memory system
+        return await self.ask_question(
+            question=question,
+            maintain_history=maintain_history,
+            use_memory=use_memory,
+            load_from_memory=use_memory
+        )
+
+    async def ask_with_persistent_session_stream(
+        self,
+        question: str,
+        use_memory: bool = False,
+        auto_establish_connection: bool = True
+    ) -> AsyncIterator[str]:
+        """Streaming ask_with_persistent_session (history always maintained). Yields text
+        deltas; the full processed response is in self._last_response afterwards."""
+        await self._ensure_persistent_session(auto_establish_connection)
+        async for delta in self.ask_question_stream(question, use_memory=use_memory, load_from_memory=use_memory):
+            yield delta
+
+    async def _ensure_persistent_session(self, auto_establish_connection: bool) -> None:
         # Check connection health and auto-establish if needed
         if auto_establish_connection:
             if not self.is_connected or not await self._verify_connection_health():
@@ -1059,14 +1144,6 @@ class PersistentAnthropicClient(BasePersistentLLMClient, AnthropicClient):
         
         if not self.session:
             raise RuntimeError("MCP session not initialized")
-        
-        # Use the ask_question method which integrates with memory system
-        return await self.ask_question(
-            question=question,
-            maintain_history=maintain_history,
-            use_memory=use_memory,
-            load_from_memory=use_memory
-        )
     
     async def cleanup(self) -> None:
         """Clean up both persistent and base class resources."""
